@@ -1,0 +1,16 @@
+LOG FILE: C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\accidents_4g_k100000_p8_wad1_q1024_d1_20260909_223943.log
+2026-09-09 22:39:43
+========================================
+START TIME    : 2026-09-09 22:39:43
+INPUT         : dataset/accidents.txt
+TOP-K         : 100000
+MAX HEAP MB   : 4096
+CANDIDATE POOL: true
+POOL WORKERS  : 8
+TASK ADMISSION : FIXED_1024
+DIAGNOSTICS    : true
+WORK-AWARE SU : true
+========================================
+[TOP-K] k=100000 | threshold after single items=1
+[TOP-K] threshold after global item pairs=1
+[PTM-STYLE] Building prefix partitions...

@@ -11,68 +11,42 @@ public class testCorrectnessParallelVsSerial {
         int maximumTransactions = args.length > 3
                 ? Integer.parseInt(args[3])
                 : Integer.MAX_VALUE;
-        boolean directUtilityRaising = args.length > 4
+        boolean workAwarePriority = args.length > 4
                 ? Boolean.parseBoolean(args[4])
                 : true;
-        boolean bestSuFirst = args.length > 5
-                ? Boolean.parseBoolean(args[5])
-                : true;
-        int maximumOutstanding = args.length > 6
-                ? Integer.parseInt(args[6])
+        int maximumOutstanding = args.length > 5
+                ? Integer.parseInt(args[5])
                 : 128;
-        boolean thresholdReady = args.length > 7
-                ? Boolean.parseBoolean(args[7])
-                : true;
-        boolean bestContinuation = args.length > 8
-                ? Boolean.parseBoolean(args[8])
-                : true;
-        int minimumTaskTransactions = args.length > 9
-                ? Integer.parseInt(args[9])
-                : 1;
 
         AlgoTKEHSerialVerifier serial = new AlgoTKEHSerialVerifier();
         Itemsets expected = serial.runAlgorithm(k, input, maximumTransactions);
 
         AlgoEFIM_PTMStyleBaseline dfs = new AlgoEFIM_PTMStyleBaseline();
-        dfs.configureTransactionUtilityRaising(false);
         dfs.configureCandidateTaskLimit(maximumOutstanding);
-        dfs.configureCandidateTaskMinimumTransactions(minimumTaskTransactions);
         dfs.configureCandidateParallelism(
                 false,
                 1,
-                directUtilityRaising,
-                bestSuFirst
+                workAwarePriority
         );
         Itemsets dfsResult = dfs.runAlgorithm(
                 k,
                 input,
                 null,
-                true,
-                maximumTransactions,
-                true
+                maximumTransactions
         );
 
         AlgoEFIM_PTMStyleBaseline parallel = new AlgoEFIM_PTMStyleBaseline();
-        parallel.configureTransactionUtilityRaising(false);
         parallel.configureCandidateTaskLimit(maximumOutstanding);
-        parallel.configureCandidateTaskMinimumTransactions(minimumTaskTransactions);
         parallel.configureCandidateParallelism(
                 true,
                 workers,
-                directUtilityRaising,
-                bestSuFirst
-        );
-        parallel.configureThresholdReadyParallelism(
-                thresholdReady,
-                bestContinuation
+                workAwarePriority
         );
         Itemsets actual = parallel.runAlgorithm(
                 k,
                 input,
                 null,
-                true,
-                maximumTransactions,
-                true
+                maximumTransactions
         );
 
         Map<String, Long> expectedMap = canonical(expected);
@@ -97,12 +71,8 @@ public class testCorrectnessParallelVsSerial {
                 + " | k=" + k
                 + " | patterns=" + actualMap.size()
                 + " | workers=" + workers
-                + " | directU=" + directUtilityRaising
-                + " | bestSU=" + bestSuFirst
-                + " | maxOutstanding=" + maximumOutstanding
-                + " | minTaskTransactions=" + minimumTaskTransactions
-                + " | thresholdReady=" + thresholdReady
-                + " | bestContinuation=" + bestContinuation);
+                + " | workAware=" + workAwarePriority
+                + " | maxOutstanding=" + maximumOutstanding);
         serial.printStats();
         dfs.printStats();
         parallel.printStats();

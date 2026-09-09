@@ -1,53 +1,50 @@
-LOG FILE: /Users/tungtnt/Desktop/Code/iTP/accidents_4g_top_100000_parallel_pool_1_workers_8_bsf_on_directU_off_ready_on_bestcont_off_pending_1024_mintasktrans_512_diag_on_20260909_135040.log
-2026-09-09 13:50:40
+LOG FILE: C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\accidents_4g_k100000_p8_su1_q1024_d1_20260909_214322.log
+2026-09-09 21:43:22
 ========================================
-START TIME    : 2026-09-09 13:50:40
+START TIME    : 2026-09-09 21:43:22
 INPUT         : dataset/accidents.txt
 TOP-K         : 100000
 MAX HEAP MB   : 4096
 CANDIDATE POOL: true
-POOL COUNT    : 1
 POOL WORKERS  : 8
 TASK ADMISSION : FIXED_1024
-MIN TASK TRANS.: 512
 DIAGNOSTICS    : true
-DIRECT U      : false
 BEST SU FIRST : true
-THRESHOLD READY: true
-BEST CHILD CONT.: false
 ========================================
 [TOP-K] k=100000 | threshold after single items=1
+[TOP-K] threshold after global item pairs=1
 [PTM-STYLE] Building prefix partitions...
 [PTM-STYLE] Mining partitions in RAM...
-[MINING] mode=THRESHOLD_READY_DFS_POOL | workers=8 | taskAdmission=FIXED_1024 | minTaskTransactions=512 | directUtilityRaising=false | bestSUFirst=true | thresholdReady=true | bestChildContinuation=false
-[THRESHOLD-READY] exactHeap=468 | minUtil=620 | enabling candidate pool
+[MINING] mode=CANDIDATE_POOL | workers=8 | taskAdmission=FIXED_1024 | minTaskTransactions=512 | directUtilityRaising=false | globalPairUtilityRaising=true | bestSUFirst=true | thresholdReady=false | bestChildContinuation=false
 ============= PTM-STYLE BASELINE STATS =============
  Top-k requested   : 100000
  Results returned  : 100000
  Initial minUtil-1 : 1
  Final minUtil     : 14721418
- Execution mode    : THRESHOLD_READY_DFS_POOL
+ Execution mode    : CANDIDATE_POOL
  Candidate pool    : true
  Pool workers      : 8
  Task admission    : FIXED_1024
  Min task trans.   : 512
  Direct child U    : false
+ Global pair U     : true
  Best-SU-first     : true
- Threshold-ready   : true
+ Threshold-ready   : false
  Threshold certified: true
  Best-child cont.  : false
  DFS partitions    : 0
  Pool partitions   : 224
  Diagnostics       : true
- Candidates        : 14895352
- Async tasks       : 193001
- Small DFS switches: 1532963
- Queue inline      : 1481665
- Time ms           : 206844
- Partition dir     : /Users/tungtnt/Desktop/Code/iTP/dataset/accidents.txt429496729610.ptm_partitions
+ Candidates        : 13660045
+ Async tasks       : 192370
+ Small DFS switches: 1527904
+ Queue inline      : 1472816
+ Time ms           : 298024
+ Max memory MB     : 3574.0
+ Partition dir     : C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\dataset\accidents.txt429496729610.ptm_partitions
 ====================================================
 
 ========================================
 STATUS   : SUCCESS
-END TIME : 2026-09-09 13:54:07
+END TIME : 2026-09-09 21:48:20
 ========================================

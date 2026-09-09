@@ -34,27 +34,30 @@ public class AlgoEFIM_PTMStyleBaseline {
     private long thresholdAfterSingles;
     private long startTimestamp;
     private long endTimestamp;
+    private double maximumMemoryUsageMb;
 
     private long patternCount;
-    private boolean activateTransactionMerging;
-    private boolean activateSubtreeUtilityPruning;
+    // Fixed defaults used by the experiment runner. The mechanisms remain in
+    // the algorithm; main does not need to pass every switch on every run.
+    private boolean activateTransactionMerging = true;
+    private boolean activateSubtreeUtilityPruning = true;
     private boolean activateCandidateParallelism;
-    private boolean activateDirectUtilityRaising;
-    private boolean activateBestSUFirst;
-    private boolean activateTransactionUtilityRaising;
-    private boolean activateThresholdReadyParallelism;
-    private boolean activateBestChildContinuation;
+    private boolean activateDirectUtilityRaising = false;
+    private boolean activateWorkAwarePriority;
+    private boolean activateTransactionUtilityRaising = true;
+    private boolean activateThresholdReadyParallelism = false;
+    private boolean activateBestChildContinuation = false;
+    private boolean activateGlobalPairUtilityRaising = true;
     private int candidateWorkerCount = Math.max(1, Runtime.getRuntime().availableProcessors());
-    private int minimumTransactionsPerCandidateTask = 1;
+    private int minimumTransactionsPerCandidateTask = 512;
     private boolean diagnosticStatistics;
     private final LongAdder diagnosticCandidateCount = new LongAdder();
     private final LongAdder diagnosticAsyncTaskCount = new LongAdder();
     private final LongAdder diagnosticSmallDfsSwitchCount = new LongAdder();
     private final LongAdder diagnosticQueueOverflowInlineCount = new LongAdder();
     /** Zero selects heap-pressure-aware admission; positive values select a fixed limit. */
-    private int maximumOutstandingCandidateTasks = 1024;
-    private static final double QUEUE_HEAP_PRESSURE_PAUSE_RATIO = 0.72d;
-    private static final double QUEUE_HEAP_PRESSURE_RESUME_RATIO = 0.60d;
+    private int maximumOutstandingCandidateTasks = 10240;
+    private static final double QUEUE_HEAP_PRESSURE_RATIO = 0.72d;
     private static final long QUEUE_HEAP_PROBE_MASK = 31L;
     private long serialDfsPartitionCount;
     private long candidatePoolPartitionCount;
@@ -72,15 +75,13 @@ public class AlgoEFIM_PTMStyleBaseline {
 
     public void configureCandidateParallelism(boolean enabled,
                                               int workerCount,
-                                              boolean directUtilityRaising,
-                                              boolean bestSUFirst) {
+                                              boolean workAwarePriority) {
         if (workerCount <= 0) {
             throw new IllegalArgumentException("workerCount must be greater than 0");
         }
         this.activateCandidateParallelism = enabled;
         this.candidateWorkerCount = workerCount;
-        this.activateDirectUtilityRaising = directUtilityRaising;
-        this.activateBestSUFirst = bestSUFirst;
+        this.activateWorkAwarePriority = workAwarePriority;
     }
 
     public void configureTransactionUtilityRaising(boolean enabled) {
@@ -96,6 +97,15 @@ public class AlgoEFIM_PTMStyleBaseline {
                                                    boolean bestChildContinuation) {
         this.activateThresholdReadyParallelism = enabled;
         this.activateBestChildContinuation = bestChildContinuation;
+    }
+
+    /**
+     * Build a global two-dimensional exact pair-utility matrix during the
+     * phase-1 database scan and offer every observed pair before partitioning.
+     * The matrix is released immediately after threshold raising.
+     */
+    public void configureGlobalPairUtilityRaising(boolean enabled) {
+        this.activateGlobalPairUtilityRaising = enabled;
     }
 
     public void configureCandidateTaskLimit(int maximumOutstandingTasks) {
@@ -122,9 +132,7 @@ public class AlgoEFIM_PTMStyleBaseline {
     public Itemsets runAlgorithm(int requestedK,
                                  String inputPath,
                                  String outputPath,
-                                 boolean activateTransactionMerging,
-                                 int maximumTransactionCount,
-                                 boolean activateSubtreeUtilityPruning) throws IOException, InterruptedException {
+                                 int maximumTransactionCount) throws IOException, InterruptedException {
 
         if (requestedK <= 0) {
             throw new IllegalArgumentException("k must be greater than 0");
@@ -137,8 +145,6 @@ public class AlgoEFIM_PTMStyleBaseline {
         this.topKThresholdCertified = false;
         this.topKQueue = new PriorityQueue<>(requestedK, TopKPattern.WORST_FIRST);
         this.thresholdAfterSingles = 0L;
-        this.activateTransactionMerging = activateTransactionMerging;
-        this.activateSubtreeUtilityPruning = activateSubtreeUtilityPruning;
         patternCount = 0;
         diagnosticCandidateCount.reset();
         diagnosticAsyncTaskCount.reset();
@@ -146,12 +152,18 @@ public class AlgoEFIM_PTMStyleBaseline {
         diagnosticQueueOverflowInlineCount.reset();
         serialDfsPartitionCount = 0L;
         candidatePoolPartitionCount = 0L;
+        maximumMemoryUsageMb = 0D;
         startTimestamp = System.currentTimeMillis();
+        MemoryLogger.getInstance().reset();
+        MemoryLogger.getInstance().checkMemory();
 
         // ==========================
-        // PHASE 1: TWU + max item
+        // PHASE 1: TWU + exact singleton/global-pair utilities
         // ==========================
         Phase1Stats stats = phase1ScanStats(inputPath, maximumTransactionCount);
+        // The global pair matrix is still resident here, so this sample
+        // captures its contribution before it is released.
+        MemoryLogger.getInstance().checkMemory();
         utilityBinArrayLU = stats.twu;
 
         // RIU strategy: exact utilities of all 1-itemsets initialize top-k.
@@ -163,6 +175,11 @@ public class AlgoEFIM_PTMStyleBaseline {
         thresholdAfterSingles = minUtil;
         System.out.println("[TOP-K] k=" + topK
                 + " | threshold after single items=" + thresholdAfterSingles);
+
+        if (activateGlobalPairUtilityRaising) {
+            raiseThresholdFromGlobalPairUtilities(stats);
+            stats.clearGlobalPairUtilities();
+        }
 
         if (activateTransactionUtilityRaising) {
             raiseThresholdFromTransactionUtilities(stats);
@@ -200,9 +217,10 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         System.out.println("[PTM-STYLE] Building prefix partitions...");
         PartitionInfo[] partitions = buildPrefixPartitions(inputPath, maximumTransactionCount);
+        MemoryLogger.getInstance().checkMemory();
 
-        // Reused while each partition is loaded. No global pair-matrix and no
-        // extra pass over all partition files are required.
+        // Reused while each partition is loaded for root LU/SU. The optional
+        // global exact-pair matrix has already been released at this point.
         RootPairWorkspace rootPairWorkspace = new RootPairWorkspace(newItemCount);
 
         // First-level SU for deciding primary items.
@@ -241,7 +259,8 @@ public class AlgoEFIM_PTMStyleBaseline {
                 + " | taskAdmission=" + candidateTaskAdmissionName()
                 + " | minTaskTransactions=" + minimumTransactionsPerCandidateTask
                 + " | directUtilityRaising=" + activateDirectUtilityRaising
-                + " | bestSUFirst=" + activateBestSUFirst
+                + " | globalPairUtilityRaising=" + activateGlobalPairUtilityRaising
+                + " | workAwarePriority=" + activateWorkAwarePriority
                 + " | thresholdReady=" + activateThresholdReadyParallelism
                 + " | bestChildContinuation=" + activateBestChildContinuation);
         // The disabled mode is a genuine recursive depth-first traversal.
@@ -278,9 +297,15 @@ public class AlgoEFIM_PTMStyleBaseline {
 
                 List<Transaction> partitionTransactions;
                 partitionTransactions = loadPartitionIntoRam(p.file, p.transactionCount);
+                MemoryLogger.getInstance().checkMemory();
 
                 calculateRootPairBounds(partitionTransactions, rootPairWorkspace);
-                offerRootPairUtilities(e, rootPairWorkspace);
+                // With global pair raising, every exact pair was inserted once
+                // after phase 1. Re-inserting it here would duplicate patterns
+                // in the top-k heap and corrupt the result.
+                if (!activateGlobalPairUtilityRaising) {
+                    offerRootPairUtilities(e, rootPairWorkspace);
+                }
                 List<Integer> newItemsToKeep = new ArrayList<>();
                 List<Integer> newItemsToExplore = new ArrayList<>();
                 buildRootItemListsFromUIP(
@@ -322,7 +347,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                                 partitionTransactions,
                                 newItemsToKeep,
                                 rootItemsToExplore,
-                                rootPairWorkspace.su
+                                rootPairWorkspace
                         );
                     } else {
                         serialDfsPartitionCount++;
@@ -336,6 +361,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     }
                 }
 
+                MemoryLogger.getInstance().checkMemory();
                 partitionTransactions.clear();
                 partitionTransactions = null;
                 partitions[e] = null;
@@ -349,6 +375,8 @@ public class AlgoEFIM_PTMStyleBaseline {
 
 
         endTimestamp = System.currentTimeMillis();
+        MemoryLogger.getInstance().checkMemory();
+        maximumMemoryUsageMb = MemoryLogger.getInstance().getMaxMemory();
         //printStats();
         patternCount = topKQueue.size();
         return buildTopKResult();
@@ -556,6 +584,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                 workspace.su[item] += transaction.prefixUtility + remainingUtility;
                 workspace.lu[item] +=
                         transaction.prefixUtility + transaction.transactionUtility;
+                workspace.suffixWork[item] += transaction.items.length - index;
             }
         }
     }
@@ -656,8 +685,6 @@ public class AlgoEFIM_PTMStyleBaseline {
         for (int index = 0; index < extensions.length; index++) {
             subtreeUtilities[index] = rootSU[extensions[index]];
         }
-        sortCandidatesByDescendingSU(extensions, subtreeUtilities);
-
         int[] rootPrefix = new int[]{newNamesToOldNames[rootItem]};
         WorkerBins bins = new WorkerBins(newItemCount, activateDirectUtilityRaising);
         for (int index = 0; index < extensions.length; index++) {
@@ -741,8 +768,6 @@ public class AlgoEFIM_PTMStyleBaseline {
         for (int index = 0; index < children.length; index++) {
             childSubtreeUtilities[index] = bins.suValue(children[index]);
         }
-        sortCandidatesByDescendingSU(children, childSubtreeUtilities);
-
         for (int index = 0; index < children.length; index++) {
             mineCandidateDepthFirst(
                     projection.transactions,
@@ -757,21 +782,47 @@ public class AlgoEFIM_PTMStyleBaseline {
         projection.transactions.clear();
     }
 
-    /** Keep sibling order unchanged unless the Best-SU-first flag is enabled. */
-    private void sortCandidatesByDescendingSU(int[] candidates, long[] subtreeUtilities) {
-        if (!activateBestSUFirst) return;
+    /**
+     * Seed the shared frontier in the same order used by its priority queue.
+     * DFS deliberately does not call this method.
+     */
+    private void sortCandidatesByDescendingWorkAwarePriority(int[] candidates,
+                                                              long[] subtreeUtilities,
+                                                              long[] estimatedWorks) {
+        if (!activateWorkAwarePriority) return;
         for (int index = 1; index < candidates.length; index++) {
             int candidate = candidates[index];
             long utility = subtreeUtilities[index];
+            long work = estimatedWorks[index];
             int position = index - 1;
-            while (position >= 0 && subtreeUtilities[position] < utility) {
+            while (position >= 0 && compareWorkAwarePriority(
+                    utility,
+                    work,
+                    subtreeUtilities[position],
+                    estimatedWorks[position]
+            ) > 0) {
                 candidates[position + 1] = candidates[position];
                 subtreeUtilities[position + 1] = subtreeUtilities[position];
+                estimatedWorks[position + 1] = estimatedWorks[position];
                 position--;
             }
             candidates[position + 1] = candidate;
             subtreeUtilities[position + 1] = utility;
+            estimatedWorks[position + 1] = work;
         }
+    }
+
+    private int compareWorkAwarePriority(long leftSU,
+                                         long leftWork,
+                                         long rightSU,
+                                         long rightWork) {
+        if (!activateWorkAwarePriority) {
+            return Long.compare(leftSU, rightSU);
+        }
+        double leftScore = (double) leftSU / (double) Math.max(1L, leftWork);
+        double rightScore = (double) rightSU / (double) Math.max(1L, rightWork);
+        int byScore = Double.compare(leftScore, rightScore);
+        return byScore != 0 ? byScore : Long.compare(leftSU, rightSU);
     }
 
     /**
@@ -801,9 +852,9 @@ public class AlgoEFIM_PTMStyleBaseline {
             queueSlots = maximumOutstandingCandidateTasks == 0
                     ? null
                     : new Semaphore(Math.max(
-                            workerCount,
-                            maximumOutstandingCandidateTasks
-                    ));
+                    workerCount,
+                    maximumOutstandingCandidateTasks
+            ));
             workers = new Thread[workerCount];
             for (int index = 0; index < workerCount; index++) {
                 Thread worker = new Thread(
@@ -831,17 +882,27 @@ public class AlgoEFIM_PTMStyleBaseline {
                            List<Transaction> rootTransactions,
                            List<Integer> itemsToKeep,
                            List<Integer> itemsToExplore,
-                           long[] rootSU) throws IOException, InterruptedException {
+                           RootPairWorkspace rootBounds) throws IOException, InterruptedException {
             PartitionRun run = new PartitionRun();
             int[] keep = toIntArray(itemsToKeep);
             int[] rootPrefix = new int[]{newNamesToOldNames[rootItem]};
 
             int[] extensions = toIntArray(itemsToExplore);
             long[] subtreeUtilities = new long[extensions.length];
+            long[] estimatedWorks = new long[extensions.length];
             for (int index = 0; index < extensions.length; index++) {
-                subtreeUtilities[index] = rootSU[extensions[index]];
+                int extension = extensions[index];
+                subtreeUtilities[index] = rootBounds.suValue(extension);
+                estimatedWorks[index] = rootBounds.estimatedWorkValue(
+                        extension,
+                        rootTransactions.size()
+                );
             }
-            sortCandidatesByDescendingSU(extensions, subtreeUtilities);
+            sortCandidatesByDescendingWorkAwarePriority(
+                    extensions,
+                    subtreeUtilities,
+                    estimatedWorks
+            );
 
             // Producer guard: prevents a very fast initial task from making
             // pending reach zero while the remaining initial tasks are added.
@@ -854,6 +915,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                         rootPrefix,
                         extensions[index],
                         subtreeUtilities[index],
+                        estimatedWorks[index],
                         true
                 );
             }
@@ -874,6 +936,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                                       int[] parentPrefix,
                                       int extension,
                                       long subtreeUtility,
+                                      long estimatedWork,
                                       boolean utilityAlreadyOffered) {
             if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
 
@@ -925,6 +988,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     parentPrefix,
                     extension,
                     subtreeUtility,
+                    estimatedWork,
                     utilityAlreadyOffered,
                     sequence.getAndIncrement()
             );
@@ -950,13 +1014,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                 Runtime runtime = Runtime.getRuntime();
                 long usedHeap = runtime.totalMemory() - runtime.freeMemory();
                 double usageRatio = (double) usedHeap / (double) runtime.maxMemory();
-                if (heapPressureHigh) {
-                    if (usageRatio <= QUEUE_HEAP_PRESSURE_RESUME_RATIO) {
-                        heapPressureHigh = false;
-                    }
-                } else if (usageRatio >= QUEUE_HEAP_PRESSURE_PAUSE_RATIO) {
-                    heapPressureHigh = true;
-                }
+                heapPressureHigh = usageRatio >= QUEUE_HEAP_PRESSURE_RATIO;
             }
 
             if (!heapPressureHigh) return true;
@@ -989,6 +1047,8 @@ public class AlgoEFIM_PTMStyleBaseline {
             final int[] parentPrefix;
             final int extension;
             final long subtreeUtility;
+            final long estimatedWork;
+            final double priorityScore;
             final boolean utilityAlreadyOffered;
             final long sequenceNumber;
 
@@ -998,6 +1058,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                           int[] parentPrefix,
                           int extension,
                           long subtreeUtility,
+                          long estimatedWork,
                           boolean utilityAlreadyOffered,
                           long sequenceNumber) {
                 this.run = run;
@@ -1006,13 +1067,17 @@ public class AlgoEFIM_PTMStyleBaseline {
                 this.parentPrefix = parentPrefix;
                 this.extension = extension;
                 this.subtreeUtility = subtreeUtility;
+                this.estimatedWork = Math.max(1L, estimatedWork);
+                this.priorityScore = (double) subtreeUtility / (double) this.estimatedWork;
                 this.utilityAlreadyOffered = utilityAlreadyOffered;
                 this.sequenceNumber = sequenceNumber;
             }
 
             @Override
             public int compareTo(CandidateTask other) {
-                if (activateBestSUFirst) {
+                if (activateWorkAwarePriority) {
+                    int byScore = Double.compare(other.priorityScore, priorityScore);
+                    if (byScore != 0) return byScore;
                     int bySU = Long.compare(other.subtreeUtility, subtreeUtility);
                     if (bySU != 0) return bySU;
                 }
@@ -1120,16 +1185,26 @@ public class AlgoEFIM_PTMStyleBaseline {
             // Snapshot every priority/bound before starting any child, or the
             // parent would read zero/stale SU values for later siblings.
             long[] childSubtreeUtilities = new long[children.length];
+            long[] childEstimatedWorks = new long[children.length];
             for (int index = 0; index < children.length; index++) {
-                childSubtreeUtilities[index] = bins.suValue(children[index]);
+                int child = children[index];
+                childSubtreeUtilities[index] = bins.suValue(child);
+                childEstimatedWorks[index] = bins.estimatedWorkValue(
+                        child,
+                        projection.transactions.size()
+                );
             }
 
             int continuationIndex = -1;
             if (activateBestChildContinuation && children.length > 0) {
                 continuationIndex = 0;
                 for (int index = 1; index < children.length; index++) {
-                    if (childSubtreeUtilities[index]
-                            > childSubtreeUtilities[continuationIndex]) {
+                    if (compareWorkAwarePriority(
+                            childSubtreeUtilities[index],
+                            childEstimatedWorks[index],
+                            childSubtreeUtilities[continuationIndex],
+                            childEstimatedWorks[continuationIndex]
+                    ) > 0) {
                         continuationIndex = index;
                     }
                 }
@@ -1164,6 +1239,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                         currentPrefix,
                         child,
                         childSubtreeUtilities[index],
+                        childEstimatedWorks[index],
                         activateDirectUtilityRaising
                 );
             }
@@ -1190,6 +1266,7 @@ public class AlgoEFIM_PTMStyleBaseline {
         final long[] lu;
         final long[] su;
         final long[] exact;
+        final long[] suffixWork;
         final int[] marks;
         final int[] touched;
         int epoch;
@@ -1199,6 +1276,7 @@ public class AlgoEFIM_PTMStyleBaseline {
             lu = new long[itemCount + 1];
             su = new long[itemCount + 1];
             exact = trackExactUtility ? new long[itemCount + 1] : null;
+            suffixWork = new long[itemCount + 1];
             marks = new int[itemCount + 1];
             touched = new int[itemCount + 1];
         }
@@ -1217,6 +1295,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                 marks[item] = epoch;
                 lu[item] = 0L;
                 su[item] = 0L;
+                suffixWork[item] = 0L;
                 if (exact != null) exact[item] = 0L;
                 touched[touchedCount++] = item;
             }
@@ -1233,6 +1312,11 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         long exactValue(int item) {
             return exact != null && marks[item] == epoch ? exact[item] : 0L;
+        }
+
+        long estimatedWorkValue(int item, int parentTransactionCount) {
+            long suffix = marks[item] == epoch ? suffixWork[item] : 0L;
+            return parentTransactionCount + suffix;
         }
     }
 
@@ -1280,6 +1364,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                 remainingUtility += projected.utilities[index];
                 bins.su[item] += projected.prefixUtility + remainingUtility;
                 bins.lu[item] += projected.prefixUtility + projected.transactionUtility;
+                bins.suffixWork[item] += projected.items.length - index;
                 if (bins.exact != null) {
                     bins.exact[item] +=
                             projected.prefixUtility + projected.utilities[index];
@@ -1445,7 +1530,8 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         Phase1Stats stats = new Phase1Stats(
                 maxItem,
-                activateTransactionUtilityRaising ? topK : 0
+                activateTransactionUtilityRaising ? topK : 0,
+                activateGlobalPairUtilityRaising
         );
         try (BufferedReader br = new BufferedReader(new FileReader(inputPath))) {
             String line;
@@ -1464,16 +1550,71 @@ public class AlgoEFIM_PTMStyleBaseline {
                             tu
                     );
                 }
+                int[] transactionItems = activateGlobalPairUtilityRaising
+                        ? new int[items.length]
+                        : null;
+                long[] transactionUtilities = activateGlobalPairUtilityRaising
+                        ? new long[items.length]
+                        : null;
                 for (int i = 0; i < items.length; i++) {
                     int item = Integer.parseInt(items[i]);
+                    long utility = Long.parseLong(utilities[i]);
                     stats.twu[item] += tu;
                     stats.support[item]++;
-                    stats.singletonUtility[item] += Long.parseLong(utilities[i]);
+                    stats.singletonUtility[item] += utility;
+                    if (activateGlobalPairUtilityRaising) {
+                        transactionItems[i] = item;
+                        transactionUtilities[i] = utility;
+                    }
+                }
+                if (activateGlobalPairUtilityRaising) {
+                    for (int left = 0; left < transactionItems.length; left++) {
+                        int leftItem = transactionItems[left];
+                        long leftUtility = transactionUtilities[left];
+                        for (int right = left + 1;
+                             right < transactionItems.length; right++) {
+                            int rightItem = transactionItems[right];
+                            int smaller = Math.min(leftItem, rightItem);
+                            int greater = Math.max(leftItem, rightItem);
+                            stats.globalPairUtility[smaller][greater] +=
+                                    leftUtility + transactionUtilities[right];
+                        }
+                    }
                 }
                 if (count == maximumTransactionCount) break;
             }
         }
         return stats;
+    }
+
+    /** Offer each global exact 2-itemset once, then keep only the threshold. */
+    private void raiseThresholdFromGlobalPairUtilities(Phase1Stats stats) {
+        long[][] pairUtility = stats.globalPairUtility;
+        if (pairUtility == null) return;
+
+        // Use the same TWU order later used by the miner. Besides preserving
+        // the prefix representation, this keeps deterministic tie-breaking at
+        // the top-k boundary identical to root-pair insertion.
+        List<Integer> pairOrder = new ArrayList<>();
+        for (int item = 1; item < stats.support.length; item++) {
+            if (stats.support[item] > 0L) pairOrder.add(item);
+        }
+        insertionSort(pairOrder, stats.twu);
+
+        for (int leftIndex = 0; leftIndex < pairOrder.size(); leftIndex++) {
+            int leftItem = pairOrder.get(leftIndex);
+            for (int rightIndex = leftIndex + 1;
+                 rightIndex < pairOrder.size(); rightIndex++) {
+                int rightItem = pairOrder.get(rightIndex);
+                int smaller = Math.min(leftItem, rightItem);
+                int greater = Math.max(leftItem, rightItem);
+                long utility = pairUtility[smaller][greater];
+                if (utility >= minUtil) {
+                    offerTopK(new int[]{leftItem, rightItem}, utility);
+                }
+            }
+        }
+        System.out.println("[TOP-K] threshold after global item pairs=" + minUtil);
     }
 
     /**
@@ -1647,7 +1788,8 @@ public class AlgoEFIM_PTMStyleBaseline {
         System.out.println(" Min task trans.   : "
                 + minimumTransactionsPerCandidateTask);
         System.out.println(" Direct child U    : " + activateDirectUtilityRaising);
-        System.out.println(" Best-SU-first     : " + activateBestSUFirst);
+        System.out.println(" Global pair U     : " + activateGlobalPairUtilityRaising);
+        System.out.println(" Work-aware SU     : " + activateWorkAwarePriority);
         System.out.println(" Threshold-ready   : " + activateThresholdReadyParallelism);
         System.out.println(" Threshold certified: " + topKThresholdCertified);
         System.out.println(" Best-child cont.  : " + activateBestChildContinuation);
@@ -1665,6 +1807,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     + diagnosticQueueOverflowInlineCount.sum());
         }
         System.out.println(" Time ms           : " + (endTimestamp - startTimestamp));
+        System.out.println(" Max memory MB     : " + maximumMemoryUsageMb);
         System.out.println(" Partition dir     : " + partitionDir.getAbsolutePath());
         System.out.println("====================================================");
     }
@@ -1683,7 +1826,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     maximumOutstandingCandidateTasks
             );
         }
-        return "ADAPTIVE_HEAP_72_60_PERCENT";
+        return "ADAPTIVE_HEAP_72_PERCENT";
     }
 
     private static final class Phase1Stats {
@@ -1691,14 +1834,25 @@ public class AlgoEFIM_PTMStyleBaseline {
         final long[] twu;
         final long[] support;
         final long[] singletonUtility;
+        long[][] globalPairUtility;
         TransactionCertificateStore transactionCertificates;
         int transactionCount;
 
-        Phase1Stats(int maxItem, int transactionCertificateLimit) {
+        Phase1Stats(int maxItem,
+                    int transactionCertificateLimit,
+                    boolean allocateGlobalPairUtility) {
             this.maxItem = maxItem;
             this.twu = new long[maxItem + 1];
             this.support = new long[maxItem + 1];
             this.singletonUtility = new long[maxItem + 1];
+            if (allocateGlobalPairUtility) {
+                try {
+                    this.globalPairUtility = new long[maxItem + 1][maxItem + 1];
+                } catch (OutOfMemoryError error) {
+                    printOOMRam("[GLOBAL PAIR MATRIX]", maxItem + 1);
+                    throw error;
+                }
+            }
             if (transactionCertificateLimit > 0) {
                 transactionCertificates =
                         new TransactionCertificateStore(transactionCertificateLimit);
@@ -1713,6 +1867,10 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         void clearTransactionCertificates() {
             transactionCertificates = null;
+        }
+
+        void clearGlobalPairUtilities() {
+            globalPairUtility = null;
         }
     }
 
@@ -1856,6 +2014,7 @@ public class AlgoEFIM_PTMStyleBaseline {
         final long[] exact;
         final long[] lu;
         final long[] su;
+        final long[] suffixWork;
         final int[] marks;
         final int[] touched;
         int epoch;
@@ -1865,6 +2024,7 @@ public class AlgoEFIM_PTMStyleBaseline {
             exact = new long[itemCount + 1];
             lu = new long[itemCount + 1];
             su = new long[itemCount + 1];
+            suffixWork = new long[itemCount + 1];
             marks = new int[itemCount + 1];
             touched = new int[itemCount + 1];
         }
@@ -1884,6 +2044,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                 exact[item] = 0L;
                 lu[item] = 0L;
                 su[item] = 0L;
+                suffixWork[item] = 0L;
                 touched[touchedCount++] = item;
             }
         }
@@ -1894,6 +2055,11 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         long suValue(int item) {
             return marks[item] == epoch ? su[item] : 0L;
+        }
+
+        long estimatedWorkValue(int item, int parentTransactionCount) {
+            long suffix = marks[item] == epoch ? suffixWork[item] : 0L;
+            return parentTransactionCount + suffix;
         }
     }
 

@@ -21,25 +21,17 @@ public class testEFIM_PTMChunk {
 
         // Experimental switches:
         // - candidateParallelism=false: recursive serial DFS (no candidate pool).
-        // - directUtilityRaising=true: calculate U(P ∪ {i}) in the SU scan
-        //   and update top-k before candidate i is executed.
-        // - bestSUFirst=true: shared pool always takes the largest-SU candidate.
-        boolean candidateParallelism = true   ;
-        boolean directUtilityRaising = true;
-        boolean bestSUFirst = true;
-        boolean transactionUtilityRaising = true;
-        boolean thresholdReadyParallelism = true;
-        boolean bestChildContinuation = false;
+        // - workAwarePriority=true: prioritize high SU per unit of estimated work.
+        boolean candidateParallelism = true;
+        boolean workAwarePriority = true;
         // Keep the production benchmark frontier bounded. Set this to 0 only
         // for the experimental heap-pressure-aware admission mode.
         int maximumOutstandingCandidateTasks = 1024;
-        int minimumTransactionsPerCandidateTask = 512;
         boolean diagnosticStatistics = true;
         int candidateWorkers = Math.max(
                 1,
                 8
         );
-        int candidatePoolCount = candidateParallelism ? 1 : 0;
         int effectiveWorkers = candidateParallelism ? candidateWorkers : 1;
 
         DateTimeFormatter formatter =
@@ -50,14 +42,9 @@ public class testEFIM_PTMChunk {
                 input,
                 k,
                 candidateParallelism,
-                candidatePoolCount,
                 effectiveWorkers,
-                directUtilityRaising,
-                bestSUFirst,
-                thresholdReadyParallelism,
-                bestChildContinuation,
+                workAwarePriority,
                 maximumOutstandingCandidateTasks,
-                minimumTransactionsPerCandidateTask,
                 diagnosticStatistics,
                 startTime
         );
@@ -75,53 +62,33 @@ public class testEFIM_PTMChunk {
                         / 1024
         );
         System.out.println("CANDIDATE POOL: " + candidateParallelism);
-        System.out.println("POOL COUNT    : " + candidatePoolCount);
         System.out.println("POOL WORKERS  : " + effectiveWorkers);
         System.out.println("TASK ADMISSION : "
                 + (maximumOutstandingCandidateTasks == 0
                 ? "ADAPTIVE_HEAP"
                 : "FIXED_" + maximumOutstandingCandidateTasks));
-        System.out.println("MIN TASK TRANS.: "
-                + minimumTransactionsPerCandidateTask);
         System.out.println("DIAGNOSTICS    : " + diagnosticStatistics);
-        System.out.println("DIRECT U      : " + directUtilityRaising);
-        System.out.println("BEST SU FIRST : " + bestSUFirst);
-        System.out.println("THRESHOLD READY: " + thresholdReadyParallelism);
-        System.out.println("BEST CHILD CONT.: " + bestChildContinuation);
+        System.out.println("WORK-AWARE SU : " + workAwarePriority);
         System.out.println("========================================");
 
         try {
             AlgoEFIM_PTMStyleBaseline algo =
                     new AlgoEFIM_PTMStyleBaseline();
 
-            algo.configureTransactionUtilityRaising(
-                    transactionUtilityRaising
-            );
             algo.configureCandidateTaskLimit(
                     maximumOutstandingCandidateTasks
-            );
-            algo.configureCandidateTaskMinimumTransactions(
-                    minimumTransactionsPerCandidateTask
             );
             algo.configureDiagnosticStatistics(diagnosticStatistics);
             algo.configureCandidateParallelism(
                     candidateParallelism,
                     candidateWorkers,
-                    directUtilityRaising,
-                    bestSUFirst
+                    workAwarePriority
             );
-            algo.configureThresholdReadyParallelism(
-                    thresholdReadyParallelism,
-                    bestChildContinuation
-            );
-
             Itemsets itemsets = algo.runAlgorithm(
                     k,
                     input,
                     null,
-                    true,
-                    dbSize,
-                    true
+                    dbSize
             );
 
             algo.printStats();
@@ -192,15 +159,10 @@ public class testEFIM_PTMChunk {
     private static void redirectConsoleToFile(String input,
                                               int k,
                                               boolean candidateParallelism,
-                                              int poolCount,
                                               int workerCount,
-                                               boolean directUtilityRaising,
-                                               boolean bestSUFirst,
-                                               boolean thresholdReadyParallelism,
-                                               boolean bestChildContinuation,
-                                               int maximumOutstandingCandidateTasks,
-                                               int minimumTransactionsPerCandidateTask,
-                                               boolean diagnosticStatistics,
+                                              boolean workAwarePriority,
+                                              int maximumOutstandingCandidateTasks,
+                                              boolean diagnosticStatistics,
                                               LocalDateTime startTime)
             throws IOException {
 
@@ -210,27 +172,19 @@ public class testEFIM_PTMChunk {
         String datasetName = datasetName(input);
         String timestamp = startTime.format(
                 DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
-        String parallelName = candidateParallelism ? "parallel" : "serial";
-        String bsfName = bestSUFirst ? "bsf_on" : "bsf_off";
-        String directUName = directUtilityRaising ? "directU_on" : "directU_off";
-        String thresholdName = thresholdReadyParallelism ? "ready_on" : "ready_off";
-        String continuationName = bestChildContinuation ? "bestcont_on" : "bestcont_off";
+        String modeName = candidateParallelism
+                ? "p" + workerCount
+                : "s";
 
         String fileName = datasetName
                 + "_" + heapName
-                + "_top_" + k
-                + "_" + parallelName
-                + "_pool_" + poolCount
-                + "_workers_" + workerCount
-                + "_" + bsfName
-                + "_" + directUName
-                + "_" + thresholdName
-                + "_" + continuationName
-                + "_pending_" + (maximumOutstandingCandidateTasks == 0
-                ? "adaptive"
+                + "_k" + k
+                + "_" + modeName
+                + "_wad" + (workAwarePriority ? 1 : 0)
+                + "_q" + (maximumOutstandingCandidateTasks == 0
+                ? "a"
                 : maximumOutstandingCandidateTasks)
-                + "_mintasktrans_" + minimumTransactionsPerCandidateTask
-                + "_diag_" + (diagnosticStatistics ? "on" : "off")
+                + "_d" + (diagnosticStatistics ? 1 : 0)
                 + "_" + timestamp
                 + ".log";
 
