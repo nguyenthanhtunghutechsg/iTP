@@ -1,0 +1,38 @@
+LOG FILE: C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\14g_0_01.log
+2026-09-05 15:17:55
+========================================
+START TIME    : 2026-09-05 15:17:55
+INPUT         : db/50M_500I_8t_max100_utility.txt
+TOTAL UTILITY : 106907478306
+THRESHOLD     : 0.01
+MIN UTILITY   : 1069074783
+MAX HEAP MB   : 14328
+OPTIMIZED     : true
+========================================
+
+========================================
+STATUS     : ERROR
+ERROR TIME : 2026-09-05 15:17:55
+ERROR TYPE : java.io.FileNotFoundException
+MESSAGE    : db\50M_500I_8t_max100_utility.txt (The system cannot find the path specified)
+========================================
+java.io.FileNotFoundException: db\50M_500I_8t_max100_utility.txt (The system cannot find the path specified)
+	at java.base/java.io.FileInputStream.open0(Native Method)
+	at java.base/java.io.FileInputStream.open(FileInputStream.java:213)
+	at java.base/java.io.FileInputStream.<init>(FileInputStream.java:152)
+	at java.base/java.io.FileInputStream.<init>(FileInputStream.java:106)
+	at java.base/java.io.FileReader.<init>(FileReader.java:60)
+	at AlgoEFIM_PTMStyleBaseline.phase1ScanStats(AlgoEFIM_PTMStyleBaseline.java:3135)
+	at AlgoEFIM_PTMStyleBaseline.runAlgorithm(AlgoEFIM_PTMStyleBaseline.java:73)
+	at testEFIM_PTMChunk.main(testEFIM_PTMChunk.java:62)
+
+UNCAUGHT ERROR IN THREAD: main
+java.io.FileNotFoundException: db\50M_500I_8t_max100_utility.txt (The system cannot find the path specified)
+	at java.base/java.io.FileInputStream.open0(Native Method)
+	at java.base/java.io.FileInputStream.open(FileInputStream.java:213)
+	at java.base/java.io.FileInputStream.<init>(FileInputStream.java:152)
+	at java.base/java.io.FileInputStream.<init>(FileInputStream.java:106)
+	at java.base/java.io.FileReader.<init>(FileReader.java:60)
+	at AlgoEFIM_PTMStyleBaseline.phase1ScanStats(AlgoEFIM_PTMStyleBaseline.java:3135)
+	at AlgoEFIM_PTMStyleBaseline.runAlgorithm(AlgoEFIM_PTMStyleBaseline.java:73)
+	at testEFIM_PTMChunk.main(testEFIM_PTMChunk.java:62)

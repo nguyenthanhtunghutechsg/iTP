@@ -1,0 +1,45 @@
+LOG FILE: C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\chainstore_14g_top_1000000_parallel_pool_1_workers_8_bsf_on_directU_on_ready_on_bestcont_on_pending_1024_20260909_001357.log
+2026-09-09 00:13:57
+========================================
+START TIME    : 2026-09-09 00:13:57
+INPUT         : dataset/chainstore.txt
+TOP-K         : 1000000
+MAX HEAP MB   : 14328
+CANDIDATE POOL: true
+POOL COUNT    : 1
+POOL WORKERS  : 8
+MAX OUTSTANDING: 1024
+DIRECT U      : true
+BEST SU FIRST : true
+THRESHOLD READY: true
+BEST CHILD CONT.: true
+========================================
+[TOP-K] k=1000000 | threshold after single items=1
+[PTM-STYLE] Building prefix partitions...
+[PTM-STYLE] Mining partitions in RAM...
+[MINING] mode=THRESHOLD_READY_DFS_POOL | workers=8 | maxOutstanding=1024 | directUtilityRaising=true | bestSUFirst=true | thresholdReady=true | bestChildContinuation=true
+[THRESHOLD-READY] exactHeap=1000000 | minUtil=50102 | enabling candidate pool
+============= PTM-STYLE BASELINE STATS =============
+ Top-k requested   : 1000000
+ Results returned  : 1000000
+ Initial minUtil-1 : 1
+ Final minUtil     : 91900
+ Execution mode    : THRESHOLD_READY_DFS_POOL
+ Candidate pool    : true
+ Pool workers      : 8
+ Max outstanding   : 1024
+ Direct child U    : true
+ Best-SU-first     : true
+ Threshold-ready   : true
+ Threshold certified: true
+ Best-child cont.  : true
+ DFS partitions    : 1
+ Pool partitions   : 12078
+ Time ms           : 369543
+ Partition dir     : C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\dataset\chainstore.txt1502399692810.ptm_partitions
+====================================================
+
+========================================
+STATUS   : SUCCESS
+END TIME : 2026-09-09 00:20:07
+========================================

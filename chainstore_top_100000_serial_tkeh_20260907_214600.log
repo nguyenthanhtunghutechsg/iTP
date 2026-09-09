@@ -1,0 +1,13 @@
+LOG FILE         : C:\Users\Admin\OneDrive - hutech.edu.vn\Desktop\Code\ParallelMassive\chainstore_top_100000_serial_tkeh_20260907_214600.log
+============= SERIAL TKEH START =============
+ Start time       : 2026-09-07 21:46:00
+ Input            : dataset/chainstore.txt
+ Top-k            : 100000
+ Max transactions : 2147483647
+ Max heap MB      : 25600
+ Parallel         : false
+=============================================
+[SERIAL-TKEH] First scan completed | distinctItems=46086
+[SERIAL-TKEH] RIU completed | threshold=1
+[SERIAL-TKEH] Reduced database loaded | transactions=1112949 | secondaryItems=46086
+[SERIAL-TKEH] Mining | primaryItems=46086 | threshold=1
