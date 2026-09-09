@@ -1,0 +1,52 @@
+LOG FILE: /Users/tungtnt/Desktop/Code/iTP/accidents_4g_top_100000_serial_pool_0_workers_1_bsf_on_directU_off_ready_on_bestcont_off_pending_1024_mintasktrans_512_diag_on_20260909_135440.log
+2026-09-09 13:54:40
+========================================
+START TIME    : 2026-09-09 13:54:40
+INPUT         : dataset/accidents.txt
+TOP-K         : 100000
+MAX HEAP MB   : 4096
+CANDIDATE POOL: false
+POOL COUNT    : 0
+POOL WORKERS  : 1
+TASK ADMISSION : FIXED_1024
+MIN TASK TRANS.: 512
+DIAGNOSTICS    : true
+DIRECT U      : false
+BEST SU FIRST : true
+THRESHOLD READY: true
+BEST CHILD CONT.: false
+========================================
+[TOP-K] k=100000 | threshold after single items=1
+[PTM-STYLE] Building prefix partitions...
+[PTM-STYLE] Mining partitions in RAM...
+[MINING] mode=SERIAL_DFS | workers=1 | taskAdmission=FIXED_1024 | minTaskTransactions=512 | directUtilityRaising=false | bestSUFirst=true | thresholdReady=true | bestChildContinuation=false
+============= PTM-STYLE BASELINE STATS =============
+ Top-k requested   : 100000
+ Results returned  : 100000
+ Initial minUtil-1 : 1
+ Final minUtil     : 14721418
+ Execution mode    : SERIAL_DFS
+ Candidate pool    : false
+ Pool workers      : 1
+ Task admission    : FIXED_1024
+ Min task trans.   : 512
+ Direct child U    : false
+ Best-SU-first     : true
+ Threshold-ready   : true
+ Threshold certified: true
+ Best-child cont.  : false
+ DFS partitions    : 224
+ Pool partitions   : 0
+ Diagnostics       : true
+ Candidates        : 14648420
+ Async tasks       : 0
+ Small DFS switches: 0
+ Queue inline      : 0
+ Time ms           : 1081029
+ Partition dir     : /Users/tungtnt/Desktop/Code/iTP/dataset/accidents.txt429496729610.ptm_partitions
+====================================================
+
+========================================
+STATUS   : SUCCESS
+END TIME : 2026-09-09 14:12:41
+========================================

@@ -20,8 +20,10 @@ import java.util.PriorityQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.LongAdder;
 
 public class AlgoEFIM_PTMStyleBaseline {
 
@@ -43,7 +45,17 @@ public class AlgoEFIM_PTMStyleBaseline {
     private boolean activateThresholdReadyParallelism;
     private boolean activateBestChildContinuation;
     private int candidateWorkerCount = Math.max(1, Runtime.getRuntime().availableProcessors());
+    private int minimumTransactionsPerCandidateTask = 1;
+    private boolean diagnosticStatistics;
+    private final LongAdder diagnosticCandidateCount = new LongAdder();
+    private final LongAdder diagnosticAsyncTaskCount = new LongAdder();
+    private final LongAdder diagnosticSmallDfsSwitchCount = new LongAdder();
+    private final LongAdder diagnosticQueueOverflowInlineCount = new LongAdder();
+    /** Zero selects heap-pressure-aware admission; positive values select a fixed limit. */
     private int maximumOutstandingCandidateTasks = 1024;
+    private static final double QUEUE_HEAP_PRESSURE_PAUSE_RATIO = 0.72d;
+    private static final double QUEUE_HEAP_PRESSURE_RESUME_RATIO = 0.60d;
+    private static final long QUEUE_HEAP_PROBE_MASK = 31L;
     private long serialDfsPartitionCount;
     private long candidatePoolPartitionCount;
 
@@ -87,11 +99,24 @@ public class AlgoEFIM_PTMStyleBaseline {
     }
 
     public void configureCandidateTaskLimit(int maximumOutstandingTasks) {
-        if (maximumOutstandingTasks <= 0) {
+        if (maximumOutstandingTasks < 0) {
             throw new IllegalArgumentException(
-                    "maximumOutstandingTasks must be greater than 0");
+                    "maximumOutstandingTasks must be 0 (adaptive) or greater");
         }
         this.maximumOutstandingCandidateTasks = maximumOutstandingTasks;
+    }
+
+    public void configureCandidateTaskMinimumTransactions(int minimumTransactions) {
+        if (minimumTransactions <= 0) {
+            throw new IllegalArgumentException(
+                    "minimumTransactions must be greater than 0");
+        }
+        this.minimumTransactionsPerCandidateTask = minimumTransactions;
+    }
+
+    /** Diagnostic counters add hot-path overhead; keep disabled for timed runs. */
+    public void configureDiagnosticStatistics(boolean enabled) {
+        this.diagnosticStatistics = enabled;
     }
 
     public Itemsets runAlgorithm(int requestedK,
@@ -115,6 +140,10 @@ public class AlgoEFIM_PTMStyleBaseline {
         this.activateTransactionMerging = activateTransactionMerging;
         this.activateSubtreeUtilityPruning = activateSubtreeUtilityPruning;
         patternCount = 0;
+        diagnosticCandidateCount.reset();
+        diagnosticAsyncTaskCount.reset();
+        diagnosticSmallDfsSwitchCount.reset();
+        diagnosticQueueOverflowInlineCount.reset();
         serialDfsPartitionCount = 0L;
         candidatePoolPartitionCount = 0L;
         startTimestamp = System.currentTimeMillis();
@@ -209,7 +238,8 @@ public class AlgoEFIM_PTMStyleBaseline {
         System.out.println("[MINING] mode="
                 + executionModeName()
                 + " | workers=" + (activateCandidateParallelism ? candidateWorkerCount : 1)
-                + " | maxOutstanding=" + maximumOutstandingCandidateTasks
+                + " | taskAdmission=" + candidateTaskAdmissionName()
+                + " | minTaskTransactions=" + minimumTransactionsPerCandidateTask
                 + " | directUtilityRaising=" + activateDirectUtilityRaising
                 + " | bestSUFirst=" + activateBestSUFirst
                 + " | thresholdReady=" + activateThresholdReadyParallelism
@@ -650,6 +680,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                                          long subtreeUtility,
                                          boolean utilityAlreadyOffered,
                                          WorkerBins bins) {
+        if (diagnosticStatistics) diagnosticCandidateCount.increment();
         if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
 
         int positionInKeep = Arrays.binarySearch(itemsToKeep, extension);
@@ -752,9 +783,12 @@ public class AlgoEFIM_PTMStyleBaseline {
         private final PriorityBlockingQueue<CandidateTask> candidateQueue =
                 new PriorityBlockingQueue<>();
         private final Semaphore queueSlots;
+        private final AtomicInteger queuedTaskCount = new AtomicInteger();
+        private final AtomicLong heapProbeSequence = new AtomicLong();
         private final Thread[] workers;
         private final AtomicLong sequence = new AtomicLong();
         private volatile boolean stopped;
+        private volatile boolean heapPressureHigh;
         private final ThreadLocal<WorkerBins> workerBins =
                 ThreadLocal.withInitial(() -> {
                     return new WorkerBins(
@@ -764,8 +798,12 @@ public class AlgoEFIM_PTMStyleBaseline {
                 });
 
         CandidateScheduler(int workerCount) {
-            int queueCapacity = Math.max(workerCount, maximumOutstandingCandidateTasks);
-            queueSlots = new Semaphore(queueCapacity);
+            queueSlots = maximumOutstandingCandidateTasks == 0
+                    ? null
+                    : new Semaphore(Math.max(
+                            workerCount,
+                            maximumOutstandingCandidateTasks
+                    ));
             workers = new Thread[workerCount];
             for (int index = 0; index < workerCount; index++) {
                 Thread worker = new Thread(
@@ -781,9 +819,7 @@ public class AlgoEFIM_PTMStyleBaseline {
             while (!stopped) {
                 try {
                     CandidateTask task = candidateQueue.take();
-                    // Capacity measures resident queued tasks, not running
-                    // workers. Release as soon as the task leaves the queue.
-                    queueSlots.release();
+                    releaseQueueAdmission();
                     task.run();
                 } catch (InterruptedException interrupted) {
                     if (stopped) return;
@@ -841,9 +877,34 @@ public class AlgoEFIM_PTMStyleBaseline {
                                       boolean utilityAlreadyOffered) {
             if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
 
-            if (!queueSlots.tryAcquire()) {
-                // The bounded frontier is full. Continue synchronously without
-                // allocating a CandidateTask or touching the pending counter.
+            if (parent.size() < minimumTransactionsPerCandidateTask) {
+                // This candidate is too small to amortize allocation, shared
+                // priority-queue traffic, and worker hand-off. Descendant
+                // projections cannot contain more transactions than this
+                // parent, so switch the whole subtree to genuine serial DFS
+                // instead of repeating scheduler checks at every child.
+                if (diagnosticStatistics) {
+                    diagnosticSmallDfsSwitchCount.increment();
+                }
+                mineCandidateDepthFirst(
+                        parent,
+                        itemsToKeep,
+                        parentPrefix,
+                        extension,
+                        subtreeUtility,
+                        utilityAlreadyOffered,
+                        workerBins.get()
+                );
+                return;
+            }
+
+            if (!tryAcquireQueueAdmission()) {
+                // The fixed frontier is full or heap pressure is high. Continue
+                // synchronously without allocating a CandidateTask or touching
+                // the pending counter.
+                if (diagnosticStatistics) {
+                    diagnosticQueueOverflowInlineCount.increment();
+                }
                 processCandidate(
                         run,
                         parent,
@@ -868,7 +929,47 @@ public class AlgoEFIM_PTMStyleBaseline {
                     sequence.getAndIncrement()
             );
             run.pending.incrementAndGet();
+            if (diagnosticStatistics) diagnosticAsyncTaskCount.increment();
             candidateQueue.offer(task);
+        }
+
+        private boolean tryAcquireQueueAdmission() {
+            if (queueSlots != null) {
+                return queueSlots.tryAcquire();
+            }
+
+            int queued = queuedTaskCount.incrementAndGet();
+
+            // Always retain enough shared work to feed every worker. Beyond
+            // that floor, stop growing the frontier when the live Java heap is
+            // under pressure. This is admission control, not instrumentation:
+            // candidates rejected here execute synchronously and are not lost.
+            if (queued <= workers.length) return true;
+
+            if ((heapProbeSequence.getAndIncrement() & QUEUE_HEAP_PROBE_MASK) == 0L) {
+                Runtime runtime = Runtime.getRuntime();
+                long usedHeap = runtime.totalMemory() - runtime.freeMemory();
+                double usageRatio = (double) usedHeap / (double) runtime.maxMemory();
+                if (heapPressureHigh) {
+                    if (usageRatio <= QUEUE_HEAP_PRESSURE_RESUME_RATIO) {
+                        heapPressureHigh = false;
+                    }
+                } else if (usageRatio >= QUEUE_HEAP_PRESSURE_PAUSE_RATIO) {
+                    heapPressureHigh = true;
+                }
+            }
+
+            if (!heapPressureHigh) return true;
+            queuedTaskCount.decrementAndGet();
+            return false;
+        }
+
+        private void releaseQueueAdmission() {
+            if (queueSlots != null) {
+                queueSlots.release();
+            } else {
+                queuedTaskCount.decrementAndGet();
+            }
         }
 
         void shutdown() throws InterruptedException {
@@ -949,6 +1050,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                                       long subtreeUtility,
                                       boolean utilityAlreadyOffered,
                                       WorkerBins bins) {
+            if (diagnosticStatistics) diagnosticCandidateCount.increment();
             if (run.failure.get() != null) return;
             if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
 
@@ -1541,7 +1643,9 @@ public class AlgoEFIM_PTMStyleBaseline {
         System.out.println(" Candidate pool    : " + activateCandidateParallelism);
         System.out.println(" Pool workers      : "
                 + (activateCandidateParallelism ? candidateWorkerCount : 1));
-        System.out.println(" Max outstanding   : " + maximumOutstandingCandidateTasks);
+        System.out.println(" Task admission    : " + candidateTaskAdmissionName());
+        System.out.println(" Min task trans.   : "
+                + minimumTransactionsPerCandidateTask);
         System.out.println(" Direct child U    : " + activateDirectUtilityRaising);
         System.out.println(" Best-SU-first     : " + activateBestSUFirst);
         System.out.println(" Threshold-ready   : " + activateThresholdReadyParallelism);
@@ -1549,6 +1653,17 @@ public class AlgoEFIM_PTMStyleBaseline {
         System.out.println(" Best-child cont.  : " + activateBestChildContinuation);
         System.out.println(" DFS partitions    : " + serialDfsPartitionCount);
         System.out.println(" Pool partitions   : " + candidatePoolPartitionCount);
+        System.out.println(" Diagnostics       : " + diagnosticStatistics);
+        if (diagnosticStatistics) {
+            System.out.println(" Candidates        : "
+                    + diagnosticCandidateCount.sum());
+            System.out.println(" Async tasks       : "
+                    + diagnosticAsyncTaskCount.sum());
+            System.out.println(" Small DFS switches: "
+                    + diagnosticSmallDfsSwitchCount.sum());
+            System.out.println(" Queue inline      : "
+                    + diagnosticQueueOverflowInlineCount.sum());
+        }
         System.out.println(" Time ms           : " + (endTimestamp - startTimestamp));
         System.out.println(" Partition dir     : " + partitionDir.getAbsolutePath());
         System.out.println("====================================================");
@@ -1559,6 +1674,16 @@ public class AlgoEFIM_PTMStyleBaseline {
         return activateThresholdReadyParallelism
                 ? "THRESHOLD_READY_DFS_POOL"
                 : "CANDIDATE_POOL";
+    }
+
+    private String candidateTaskAdmissionName() {
+        if (maximumOutstandingCandidateTasks > 0) {
+            return "FIXED_" + Math.max(
+                    candidateWorkerCount,
+                    maximumOutstandingCandidateTasks
+            );
+        }
+        return "ADAPTIVE_HEAP_72_60_PERCENT";
     }
 
     private static final class Phase1Stats {

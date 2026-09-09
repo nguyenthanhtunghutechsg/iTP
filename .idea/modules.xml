@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/ParallelMassive.iml" filepath="$PROJECT_DIR$/ParallelMassive.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/iTP.iml" filepath="$PROJECT_DIR$/.idea/iTP.iml" />
     </modules>
   </component>
 </project>

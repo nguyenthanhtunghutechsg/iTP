@@ -13,8 +13,8 @@ public class testEFIM_PTMChunk {
             throws IOException, InterruptedException {
 
 
-        String input = "dataset/chainstore.txt";
-        int k = 1000000;
+        String input = "dataset/accidents.txt";
+        int k = 100000;
 //        String input = "db/50M_60I_D20_T95_utility.txt";
 
         int dbSize = Integer.MAX_VALUE;
@@ -24,13 +24,17 @@ public class testEFIM_PTMChunk {
         // - directUtilityRaising=true: calculate U(P ∪ {i}) in the SU scan
         //   and update top-k before candidate i is executed.
         // - bestSUFirst=true: shared pool always takes the largest-SU candidate.
-        boolean candidateParallelism = true;
+        boolean candidateParallelism = true   ;
         boolean directUtilityRaising = true;
         boolean bestSUFirst = true;
         boolean transactionUtilityRaising = true;
         boolean thresholdReadyParallelism = true;
-        boolean bestChildContinuation = true;
+        boolean bestChildContinuation = false;
+        // Keep the production benchmark frontier bounded. Set this to 0 only
+        // for the experimental heap-pressure-aware admission mode.
         int maximumOutstandingCandidateTasks = 1024;
+        int minimumTransactionsPerCandidateTask = 512;
+        boolean diagnosticStatistics = true;
         int candidateWorkers = Math.max(
                 1,
                 8
@@ -53,6 +57,8 @@ public class testEFIM_PTMChunk {
                 thresholdReadyParallelism,
                 bestChildContinuation,
                 maximumOutstandingCandidateTasks,
+                minimumTransactionsPerCandidateTask,
+                diagnosticStatistics,
                 startTime
         );
 
@@ -71,7 +77,13 @@ public class testEFIM_PTMChunk {
         System.out.println("CANDIDATE POOL: " + candidateParallelism);
         System.out.println("POOL COUNT    : " + candidatePoolCount);
         System.out.println("POOL WORKERS  : " + effectiveWorkers);
-        System.out.println("MAX OUTSTANDING: " + maximumOutstandingCandidateTasks);
+        System.out.println("TASK ADMISSION : "
+                + (maximumOutstandingCandidateTasks == 0
+                ? "ADAPTIVE_HEAP"
+                : "FIXED_" + maximumOutstandingCandidateTasks));
+        System.out.println("MIN TASK TRANS.: "
+                + minimumTransactionsPerCandidateTask);
+        System.out.println("DIAGNOSTICS    : " + diagnosticStatistics);
         System.out.println("DIRECT U      : " + directUtilityRaising);
         System.out.println("BEST SU FIRST : " + bestSUFirst);
         System.out.println("THRESHOLD READY: " + thresholdReadyParallelism);
@@ -88,6 +100,10 @@ public class testEFIM_PTMChunk {
             algo.configureCandidateTaskLimit(
                     maximumOutstandingCandidateTasks
             );
+            algo.configureCandidateTaskMinimumTransactions(
+                    minimumTransactionsPerCandidateTask
+            );
+            algo.configureDiagnosticStatistics(diagnosticStatistics);
             algo.configureCandidateParallelism(
                     candidateParallelism,
                     candidateWorkers,
@@ -183,6 +199,8 @@ public class testEFIM_PTMChunk {
                                                boolean thresholdReadyParallelism,
                                                boolean bestChildContinuation,
                                                int maximumOutstandingCandidateTasks,
+                                               int minimumTransactionsPerCandidateTask,
+                                               boolean diagnosticStatistics,
                                               LocalDateTime startTime)
             throws IOException {
 
@@ -208,7 +226,11 @@ public class testEFIM_PTMChunk {
                 + "_" + directUName
                 + "_" + thresholdName
                 + "_" + continuationName
-                + "_pending_" + maximumOutstandingCandidateTasks
+                + "_pending_" + (maximumOutstandingCandidateTasks == 0
+                ? "adaptive"
+                : maximumOutstandingCandidateTasks)
+                + "_mintasktrans_" + minimumTransactionsPerCandidateTask
+                + "_diag_" + (diagnosticStatistics ? "on" : "off")
                 + "_" + timestamp
                 + ".log";
 
@@ -278,4 +300,3 @@ public class testEFIM_PTMChunk {
     }
 
 }
-
