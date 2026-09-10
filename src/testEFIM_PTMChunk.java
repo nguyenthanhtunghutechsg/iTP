@@ -21,12 +21,11 @@ public class testEFIM_PTMChunk {
 
         // Experimental switches:
         // - candidateParallelism=false: recursive serial DFS (no candidate pool).
-        // - workAwarePriority=true: prioritize high SU per unit of estimated work.
+        // Parallel candidates are prioritized by SU per unit of estimated work.
         boolean candidateParallelism = true;
         boolean workAwarePriority = true;
-        // Keep the production benchmark frontier bounded. Set this to 0 only
-        // for the experimental heap-pressure-aware admission mode.
-        int maximumOutstandingCandidateTasks = 1024;
+        // Fixed resident frontier; overflow candidates continue inline.
+        int maximumOutstandingCandidateTasks = 128;
         boolean diagnosticStatistics = true;
         int candidateWorkers = Math.max(
                 1,
@@ -63,10 +62,8 @@ public class testEFIM_PTMChunk {
         );
         System.out.println("CANDIDATE POOL: " + candidateParallelism);
         System.out.println("POOL WORKERS  : " + effectiveWorkers);
-        System.out.println("TASK ADMISSION : "
-                + (maximumOutstandingCandidateTasks == 0
-                ? "ADAPTIVE_HEAP"
-                : "FIXED_" + maximumOutstandingCandidateTasks));
+        System.out.println("TASK ADMISSION : FIXED_"
+                + maximumOutstandingCandidateTasks);
         System.out.println("DIAGNOSTICS    : " + diagnosticStatistics);
         System.out.println("WORK-AWARE SU : " + workAwarePriority);
         System.out.println("========================================");
@@ -181,9 +178,7 @@ public class testEFIM_PTMChunk {
                 + "_k" + k
                 + "_" + modeName
                 + "_wad" + (workAwarePriority ? 1 : 0)
-                + "_q" + (maximumOutstandingCandidateTasks == 0
-                ? "a"
-                : maximumOutstandingCandidateTasks)
+                + "_q" + maximumOutstandingCandidateTasks
                 + "_d" + (diagnosticStatistics ? 1 : 0)
                 + "_" + timestamp
                 + ".log";

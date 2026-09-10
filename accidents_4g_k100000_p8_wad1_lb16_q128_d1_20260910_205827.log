@@ -1,0 +1,52 @@
+LOG FILE: /Users/tungtnt/Desktop/Code/iTP/accidents_4g_k100000_p8_wad1_lb16_q128_d1_20260910_205827.log
+2026-09-10 20:58:27
+========================================
+START TIME    : 2026-09-10 20:58:27
+INPUT         : dataset/accidents.txt
+TOP-K         : 100000
+MAX HEAP MB   : 4096
+CANDIDATE POOL: true
+POOL WORKERS  : 8
+TASK ADMISSION : FIXED_128
+DIAGNOSTICS    : true
+WORK-AWARE SU : true
+LOCAL TOP-K BUF: true
+TOP-K BUF SIZE : 16
+========================================
+[TOP-K] k=100000 | threshold after single items=1
+[TOP-K] threshold after global item pairs=1
+[PTM-STYLE] Building prefix partitions...
+[PTM-STYLE] Mining partitions in RAM...
+[MINING] mode=WORK_AWARE_SU_POOL | workers=8 | taskAdmission=FIXED_128 | minTaskTransactions=512 | globalPairUtilityRaising=true | workAwarePriority=true | localTopKBuffer=true(16)
+============= PTM-STYLE BASELINE STATS =============
+ Top-k requested   : 100000
+ Results returned  : 100000
+ Initial minUtil-1 : 1
+ Final minUtil     : 14721418
+ Execution mode    : WORK_AWARE_SU_POOL
+ Candidate pool    : true
+ Pool workers      : 8
+ Task admission    : FIXED_128
+ Min task trans.   : 512
+ Global pair U     : true
+ Work-aware SU     : true
+ Local top-k buffer: true
+ Top-k buffer size : 16
+ DFS partitions    : 0
+ Pool partitions   : 224
+ Diagnostics       : true
+ Candidates        : 17487807
+ Async tasks       : 1164297
+ Small DFS switches: 1645372
+ Queue inline      : 653649
+ Buffered top-k    : 5259463
+ Top-k buffer flush: 329155
+ Time ms           : 182158
+ Max memory MB     : 1310.0159225463867
+ Partition dir     : /Users/tungtnt/Desktop/Code/iTP/dataset/accidents.txt429496729610.ptm_partitions
+====================================================
+
+========================================
+STATUS   : SUCCESS
+END TIME : 2026-09-10 21:01:29
+========================================

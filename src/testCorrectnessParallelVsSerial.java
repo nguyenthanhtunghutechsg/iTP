@@ -17,6 +17,11 @@ public class testCorrectnessParallelVsSerial {
         int maximumOutstanding = args.length > 5
                 ? Integer.parseInt(args[5])
                 : 128;
+        boolean diagnosticStatistics = args.length > 6
+                && Boolean.parseBoolean(args[6]);
+        int minimumTaskTransactions = args.length > 7
+                ? Integer.parseInt(args[7])
+                : 512;
 
         AlgoTKEHSerialVerifier serial = new AlgoTKEHSerialVerifier();
         Itemsets expected = serial.runAlgorithm(k, input, maximumTransactions);
@@ -37,6 +42,10 @@ public class testCorrectnessParallelVsSerial {
 
         AlgoEFIM_PTMStyleBaseline parallel = new AlgoEFIM_PTMStyleBaseline();
         parallel.configureCandidateTaskLimit(maximumOutstanding);
+        parallel.configureCandidateTaskMinimumTransactions(
+                minimumTaskTransactions
+        );
+        parallel.configureDiagnosticStatistics(diagnosticStatistics);
         parallel.configureCandidateParallelism(
                 true,
                 workers,
@@ -72,6 +81,8 @@ public class testCorrectnessParallelVsSerial {
                 + " | patterns=" + actualMap.size()
                 + " | workers=" + workers
                 + " | workAware=" + workAwarePriority
+                + " | diagnostics=" + diagnosticStatistics
+                + " | minTaskTransactions=" + minimumTaskTransactions
                 + " | maxOutstanding=" + maximumOutstanding);
         serial.printStats();
         dfs.printStats();

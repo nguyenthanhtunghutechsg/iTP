@@ -20,7 +20,6 @@ import java.util.PriorityQueue;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.atomic.LongAdder;
@@ -29,7 +28,6 @@ public class AlgoEFIM_PTMStyleBaseline {
 
     private int topK;
     private volatile long minUtil;
-    private volatile boolean topKThresholdCertified;
     private PriorityQueue<TopKPattern> topKQueue;
     private long thresholdAfterSingles;
     private long startTimestamp;
@@ -42,11 +40,8 @@ public class AlgoEFIM_PTMStyleBaseline {
     private boolean activateTransactionMerging = true;
     private boolean activateSubtreeUtilityPruning = true;
     private boolean activateCandidateParallelism;
-    private boolean activateDirectUtilityRaising = false;
     private boolean activateWorkAwarePriority;
     private boolean activateTransactionUtilityRaising = true;
-    private boolean activateThresholdReadyParallelism = false;
-    private boolean activateBestChildContinuation = false;
     private boolean activateGlobalPairUtilityRaising = true;
     private int candidateWorkerCount = Math.max(1, Runtime.getRuntime().availableProcessors());
     private int minimumTransactionsPerCandidateTask = 512;
@@ -55,10 +50,7 @@ public class AlgoEFIM_PTMStyleBaseline {
     private final LongAdder diagnosticAsyncTaskCount = new LongAdder();
     private final LongAdder diagnosticSmallDfsSwitchCount = new LongAdder();
     private final LongAdder diagnosticQueueOverflowInlineCount = new LongAdder();
-    /** Zero selects heap-pressure-aware admission; positive values select a fixed limit. */
-    private int maximumOutstandingCandidateTasks = 10240;
-    private static final double QUEUE_HEAP_PRESSURE_RATIO = 0.72d;
-    private static final long QUEUE_HEAP_PROBE_MASK = 31L;
+    private int maximumOutstandingCandidateTasks = 128;
     private long serialDfsPartitionCount;
     private long candidatePoolPartitionCount;
 
@@ -89,17 +81,6 @@ public class AlgoEFIM_PTMStyleBaseline {
     }
 
     /**
-     * Delay the candidate pool until k valid pattern witnesses certify a
-     * top-k lower bound. Witnesses may come from the exact result heap or from
-     * a safe threshold-raising strategy. The warm-up uses serial DFS.
-     */
-    public void configureThresholdReadyParallelism(boolean enabled,
-                                                   boolean bestChildContinuation) {
-        this.activateThresholdReadyParallelism = enabled;
-        this.activateBestChildContinuation = bestChildContinuation;
-    }
-
-    /**
      * Build a global two-dimensional exact pair-utility matrix during the
      * phase-1 database scan and offer every observed pair before partitioning.
      * The matrix is released immediately after threshold raising.
@@ -109,9 +90,9 @@ public class AlgoEFIM_PTMStyleBaseline {
     }
 
     public void configureCandidateTaskLimit(int maximumOutstandingTasks) {
-        if (maximumOutstandingTasks < 0) {
+        if (maximumOutstandingTasks <= 0) {
             throw new IllegalArgumentException(
-                    "maximumOutstandingTasks must be 0 (adaptive) or greater");
+                    "maximumOutstandingTasks must be greater than 0");
         }
         this.maximumOutstandingCandidateTasks = maximumOutstandingTasks;
     }
@@ -142,7 +123,6 @@ public class AlgoEFIM_PTMStyleBaseline {
         // This also prevents nonexistent zero-utility itemsets from entering
         // the result when k is larger than the number of observed patterns.
         this.minUtil = 1L;
-        this.topKThresholdCertified = false;
         this.topKQueue = new PriorityQueue<>(requestedK, TopKPattern.WORST_FIRST);
         this.thresholdAfterSingles = 0L;
         patternCount = 0;
@@ -258,11 +238,8 @@ public class AlgoEFIM_PTMStyleBaseline {
                 + " | workers=" + (activateCandidateParallelism ? candidateWorkerCount : 1)
                 + " | taskAdmission=" + candidateTaskAdmissionName()
                 + " | minTaskTransactions=" + minimumTransactionsPerCandidateTask
-                + " | directUtilityRaising=" + activateDirectUtilityRaising
                 + " | globalPairUtilityRaising=" + activateGlobalPairUtilityRaising
-                + " | workAwarePriority=" + activateWorkAwarePriority
-                + " | thresholdReady=" + activateThresholdReadyParallelism
-                + " | bestChildContinuation=" + activateBestChildContinuation);
+                + " | workAwarePriority=" + activateWorkAwarePriority);
         // The disabled mode is a genuine recursive depth-first traversal.
         // Candidate tasks and the shared priority pool exist only in parallel mode.
         CandidateScheduler candidateScheduler = activateCandidateParallelism
@@ -330,17 +307,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     List<Integer> rootItemsToExplore = activateSubtreeUtilityPruning
                             ? newItemsToExplore
                             : newItemsToKeep;
-                    boolean useCandidatePool = activateCandidateParallelism
-                            && (!activateThresholdReadyParallelism
-                            || topKThresholdCertified);
-                    if (useCandidatePool) {
-                        if (candidatePoolPartitionCount == 0L
-                                && activateThresholdReadyParallelism) {
-                            System.out.println("[THRESHOLD-READY] exactHeap="
-                                    + topKQueue.size()
-                                    + " | minUtil=" + minUtil
-                                    + " | enabling candidate pool");
-                        }
+                    if (activateCandidateParallelism) {
                         candidatePoolPartitionCount++;
                         candidateScheduler.minePartition(
                                 e,
@@ -686,7 +653,7 @@ public class AlgoEFIM_PTMStyleBaseline {
             subtreeUtilities[index] = rootSU[extensions[index]];
         }
         int[] rootPrefix = new int[]{newNamesToOldNames[rootItem]};
-        WorkerBins bins = new WorkerBins(newItemCount, activateDirectUtilityRaising);
+        WorkerBins bins = new WorkerBins(newItemCount);
         for (int index = 0; index < extensions.length; index++) {
             mineCandidateDepthFirst(
                     rootTransactions,
@@ -728,19 +695,6 @@ public class AlgoEFIM_PTMStyleBaseline {
         }
         if (projection.transactions.isEmpty()) return;
 
-        if (activateDirectUtilityRaising) {
-            for (int index = positionInKeep + 1; index < itemsToKeep.length; index++) {
-                int child = itemsToKeep[index];
-                long utility = bins.exactValue(child);
-                if (utility >= minUtil) {
-                    offerTopK(
-                            appendItem(currentPrefix, newNamesToOldNames[child]),
-                            utility
-                    );
-                }
-            }
-        }
-
         long currentThreshold = minUtil;
         int suffixSize = itemsToKeep.length - positionInKeep - 1;
         int[] keptBuffer = new int[suffixSize];
@@ -775,7 +729,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                     currentPrefix,
                     children[index],
                     childSubtreeUtilities[index],
-                    activateDirectUtilityRaising,
+                    false,
                     bins
             );
         }
@@ -786,16 +740,16 @@ public class AlgoEFIM_PTMStyleBaseline {
      * Seed the shared frontier in the same order used by its priority queue.
      * DFS deliberately does not call this method.
      */
-    private void sortCandidatesByDescendingWorkAwarePriority(int[] candidates,
-                                                              long[] subtreeUtilities,
-                                                              long[] estimatedWorks) {
+    private void sortCandidatesByDescendingSUWorkPriority(int[] candidates,
+                                                          long[] subtreeUtilities,
+                                                          long[] estimatedWorks) {
         if (!activateWorkAwarePriority) return;
         for (int index = 1; index < candidates.length; index++) {
             int candidate = candidates[index];
             long utility = subtreeUtilities[index];
             long work = estimatedWorks[index];
             int position = index - 1;
-            while (position >= 0 && compareWorkAwarePriority(
+            while (position >= 0 && compareSUWorkPriority(
                     utility,
                     work,
                     subtreeUtilities[position],
@@ -812,10 +766,10 @@ public class AlgoEFIM_PTMStyleBaseline {
         }
     }
 
-    private int compareWorkAwarePriority(long leftSU,
-                                         long leftWork,
-                                         long rightSU,
-                                         long rightWork) {
+    private int compareSUWorkPriority(long leftSU,
+                                      long leftWork,
+                                      long rightSU,
+                                      long rightWork) {
         if (!activateWorkAwarePriority) {
             return Long.compare(leftSU, rightSU);
         }
@@ -825,33 +779,19 @@ public class AlgoEFIM_PTMStyleBaseline {
         return byScore != 0 ? byScore : Long.compare(leftSU, rightSU);
     }
 
-    /**
-     * A reusable worker pool where each task processes exactly one candidate.
-     * Children are returned to the shared queue instead of being explored
-     * recursively by the same worker.
-     */
+    /** A reusable worker pool with exactly one candidate per queued task. */
     private final class CandidateScheduler {
         private final PriorityBlockingQueue<CandidateTask> candidateQueue =
                 new PriorityBlockingQueue<>();
         private final Semaphore queueSlots;
-        private final AtomicInteger queuedTaskCount = new AtomicInteger();
-        private final AtomicLong heapProbeSequence = new AtomicLong();
         private final Thread[] workers;
         private final AtomicLong sequence = new AtomicLong();
         private volatile boolean stopped;
-        private volatile boolean heapPressureHigh;
         private final ThreadLocal<WorkerBins> workerBins =
-                ThreadLocal.withInitial(() -> {
-                    return new WorkerBins(
-                            newItemCount,
-                            activateDirectUtilityRaising
-                    );
-                });
+                ThreadLocal.withInitial(() -> new WorkerBins(newItemCount));
 
         CandidateScheduler(int workerCount) {
-            queueSlots = maximumOutstandingCandidateTasks == 0
-                    ? null
-                    : new Semaphore(Math.max(
+            queueSlots = new Semaphore(Math.max(
                     workerCount,
                     maximumOutstandingCandidateTasks
             ));
@@ -898,27 +838,20 @@ public class AlgoEFIM_PTMStyleBaseline {
                         rootTransactions.size()
                 );
             }
-            sortCandidatesByDescendingWorkAwarePriority(
-                    extensions,
-                    subtreeUtilities,
-                    estimatedWorks
-            );
-
             // Producer guard: prevents a very fast initial task from making
             // pending reach zero while the remaining initial tasks are added.
             run.pending.incrementAndGet();
-            for (int index = 0; index < extensions.length; index++) {
-                enqueueCandidate(
-                        run,
-                        rootTransactions,
-                        keep,
-                        rootPrefix,
-                        extensions[index],
-                        subtreeUtilities[index],
-                        estimatedWorks[index],
-                        true
-                );
-            }
+            enqueueCandidates(
+                    run,
+                    rootTransactions,
+                    keep,
+                    rootPrefix,
+                    extensions,
+                    subtreeUtilities,
+                    estimatedWorks,
+                    true,
+                    true
+            );
             run.finishOne();
             run.completed.await();
 
@@ -930,6 +863,80 @@ public class AlgoEFIM_PTMStyleBaseline {
             if (failure != null) throw new IOException("Candidate worker failed", failure);
         }
 
+        private void enqueueCandidates(PartitionRun run,
+                                       List<Transaction> parent,
+                                       int[] itemsToKeep,
+                                       int[] parentPrefix,
+                                       int[] extensions,
+                                       long[] subtreeUtilities,
+                                       long[] estimatedWorks,
+                                       boolean utilityAlreadyOffered,
+                                       boolean initialCandidates) {
+            int eligibleCount = 0;
+            for (int index = 0; index < extensions.length; index++) {
+                if (activateSubtreeUtilityPruning
+                        && subtreeUtilities[index] < minUtil) {
+                    continue;
+                }
+                extensions[eligibleCount] = extensions[index];
+                subtreeUtilities[eligibleCount] = subtreeUtilities[index];
+                estimatedWorks[eligibleCount] = estimatedWorks[index];
+                eligibleCount++;
+            }
+            if (eligibleCount == 0) return;
+
+            int[] eligibleExtensions = eligibleCount == extensions.length
+                    ? extensions
+                    : Arrays.copyOf(extensions, eligibleCount);
+            long[] eligibleUtilities = eligibleCount == subtreeUtilities.length
+                    ? subtreeUtilities
+                    : Arrays.copyOf(subtreeUtilities, eligibleCount);
+            long[] eligibleWorks = eligibleCount == estimatedWorks.length
+                    ? estimatedWorks
+                    : Arrays.copyOf(estimatedWorks, eligibleCount);
+            // Publish roots in priority order. Deeper candidates are ordered
+            // by the shared priority queue itself.
+            if (initialCandidates) {
+                sortCandidatesByDescendingSUWorkPriority(
+                        eligibleExtensions,
+                        eligibleUtilities,
+                        eligibleWorks
+                );
+            }
+
+            if (parent.size() < minimumTransactionsPerCandidateTask) {
+                if (diagnosticStatistics) {
+                    diagnosticSmallDfsSwitchCount.add(eligibleCount);
+                }
+                WorkerBins bins = workerBins.get();
+                for (int index = 0; index < eligibleCount; index++) {
+                    mineCandidateDepthFirst(
+                            parent,
+                            itemsToKeep,
+                            parentPrefix,
+                            eligibleExtensions[index],
+                            eligibleUtilities[index],
+                            utilityAlreadyOffered,
+                            bins
+                    );
+                }
+                return;
+            }
+
+            for (int index = 0; index < eligibleCount; index++) {
+                enqueueCandidate(
+                        run,
+                        parent,
+                        itemsToKeep,
+                        parentPrefix,
+                        eligibleExtensions[index],
+                        eligibleUtilities[index],
+                        eligibleWorks[index],
+                        utilityAlreadyOffered
+                );
+            }
+        }
+
         private void enqueueCandidate(PartitionRun run,
                                       List<Transaction> parent,
                                       int[] itemsToKeep,
@@ -938,33 +945,9 @@ public class AlgoEFIM_PTMStyleBaseline {
                                       long subtreeUtility,
                                       long estimatedWork,
                                       boolean utilityAlreadyOffered) {
-            if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
-
-            if (parent.size() < minimumTransactionsPerCandidateTask) {
-                // This candidate is too small to amortize allocation, shared
-                // priority-queue traffic, and worker hand-off. Descendant
-                // projections cannot contain more transactions than this
-                // parent, so switch the whole subtree to genuine serial DFS
-                // instead of repeating scheduler checks at every child.
-                if (diagnosticStatistics) {
-                    diagnosticSmallDfsSwitchCount.increment();
-                }
-                mineCandidateDepthFirst(
-                        parent,
-                        itemsToKeep,
-                        parentPrefix,
-                        extension,
-                        subtreeUtility,
-                        utilityAlreadyOffered,
-                        workerBins.get()
-                );
-                return;
-            }
-
-            if (!tryAcquireQueueAdmission()) {
-                // The fixed frontier is full or heap pressure is high. Continue
-                // synchronously without allocating a CandidateTask or touching
-                // the pending counter.
+            if (!queueSlots.tryAcquire()) {
+                // The fixed frontier is full. Continue synchronously without
+                // allocating a task or touching the pending counter.
                 if (diagnosticStatistics) {
                     diagnosticQueueOverflowInlineCount.increment();
                 }
@@ -997,37 +980,8 @@ public class AlgoEFIM_PTMStyleBaseline {
             candidateQueue.offer(task);
         }
 
-        private boolean tryAcquireQueueAdmission() {
-            if (queueSlots != null) {
-                return queueSlots.tryAcquire();
-            }
-
-            int queued = queuedTaskCount.incrementAndGet();
-
-            // Always retain enough shared work to feed every worker. Beyond
-            // that floor, stop growing the frontier when the live Java heap is
-            // under pressure. This is admission control, not instrumentation:
-            // candidates rejected here execute synchronously and are not lost.
-            if (queued <= workers.length) return true;
-
-            if ((heapProbeSequence.getAndIncrement() & QUEUE_HEAP_PROBE_MASK) == 0L) {
-                Runtime runtime = Runtime.getRuntime();
-                long usedHeap = runtime.totalMemory() - runtime.freeMemory();
-                double usageRatio = (double) usedHeap / (double) runtime.maxMemory();
-                heapPressureHigh = usageRatio >= QUEUE_HEAP_PRESSURE_RATIO;
-            }
-
-            if (!heapPressureHigh) return true;
-            queuedTaskCount.decrementAndGet();
-            return false;
-        }
-
         private void releaseQueueAdmission() {
-            if (queueSlots != null) {
-                queueSlots.release();
-            } else {
-                queuedTaskCount.decrementAndGet();
-            }
+            queueSlots.release();
         }
 
         void shutdown() throws InterruptedException {
@@ -1068,7 +1022,8 @@ public class AlgoEFIM_PTMStyleBaseline {
                 this.extension = extension;
                 this.subtreeUtility = subtreeUtility;
                 this.estimatedWork = Math.max(1L, estimatedWork);
-                this.priorityScore = (double) subtreeUtility / (double) this.estimatedWork;
+                this.priorityScore = (double) this.subtreeUtility
+                        / (double) this.estimatedWork;
                 this.utilityAlreadyOffered = utilityAlreadyOffered;
                 this.sequenceNumber = sequenceNumber;
             }
@@ -1088,7 +1043,7 @@ public class AlgoEFIM_PTMStyleBaseline {
             public void run() {
                 try {
                     if (run.failure.get() != null) return;
-                    if (activateSubtreeUtilityPruning && subtreeUtility < minUtil) return;
+                    WorkerBins bins = workerBins.get();
                     processCandidate(
                             run,
                             parent,
@@ -1097,7 +1052,7 @@ public class AlgoEFIM_PTMStyleBaseline {
                             extension,
                             subtreeUtility,
                             utilityAlreadyOffered,
-                            workerBins.get()
+                            bins
                     );
                 } catch (Throwable failure) {
                     run.fail(failure);
@@ -1139,22 +1094,6 @@ public class AlgoEFIM_PTMStyleBaseline {
 
             if (projection.transactions.isEmpty()) return;
 
-            // Exact utilities of all immediate children are available from
-            // the same suffix loop that calculates LU and SU.
-            if (activateDirectUtilityRaising) {
-                for (int index = positionInKeep + 1;
-                     index < itemsToKeep.length; index++) {
-                    int child = itemsToKeep[index];
-                    long utility = bins.exactValue(child);
-                    if (utility >= minUtil) {
-                        offerTopK(
-                                appendItem(currentPrefix, newNamesToOldNames[child]),
-                                utility
-                        );
-                    }
-                }
-            }
-
             long currentThreshold = minUtil;
             int suffixSize = itemsToKeep.length - positionInKeep - 1;
             int[] keptBuffer = new int[suffixSize];
@@ -1180,10 +1119,8 @@ public class AlgoEFIM_PTMStyleBaseline {
                     ? Arrays.copyOf(exploredBuffer, exploredCount)
                     : newItemsToKeep;
 
-            // A continuation or queue-overflow child reuses and resets this
-            // thread's WorkerBins.
-            // Snapshot every priority/bound before starting any child, or the
-            // parent would read zero/stale SU values for later siblings.
+            // Queue-overflow DFS reuses and resets this thread's WorkerBins,
+            // so snapshot every child bound before any child can run inline.
             long[] childSubtreeUtilities = new long[children.length];
             long[] childEstimatedWorks = new long[children.length];
             for (int index = 0; index < children.length; index++) {
@@ -1195,52 +1132,17 @@ public class AlgoEFIM_PTMStyleBaseline {
                 );
             }
 
-            int continuationIndex = -1;
-            if (activateBestChildContinuation && children.length > 0) {
-                continuationIndex = 0;
-                for (int index = 1; index < children.length; index++) {
-                    if (compareWorkAwarePriority(
-                            childSubtreeUtilities[index],
-                            childEstimatedWorks[index],
-                            childSubtreeUtilities[continuationIndex],
-                            childEstimatedWorks[continuationIndex]
-                    ) > 0) {
-                        continuationIndex = index;
-                    }
-                }
-
-                // Work-first threshold leader: do not make the strongest child
-                // wait behind the shared frontier. Its siblings remain pool
-                // candidates after this continuation returns.
-                processCandidate(
+            if (children.length > 0) {
+                enqueueCandidates(
                         run,
                         projection.transactions,
                         newItemsToKeep,
                         currentPrefix,
-                        children[continuationIndex],
-                        childSubtreeUtilities[continuationIndex],
-                        activateDirectUtilityRaising,
-                        bins
-                );
-                if (run.failure.get() != null) return;
-            }
-
-            for (int index = 0; index < children.length; index++) {
-                if (index == continuationIndex) continue;
-                if (activateSubtreeUtilityPruning
-                        && childSubtreeUtilities[index] < minUtil) {
-                    continue;
-                }
-                int child = children[index];
-                enqueueCandidate(
-                        run,
-                        projection.transactions,
-                        newItemsToKeep,
-                        currentPrefix,
-                        child,
-                        childSubtreeUtilities[index],
-                        childEstimatedWorks[index],
-                        activateDirectUtilityRaising
+                        children,
+                        childSubtreeUtilities,
+                        childEstimatedWorks,
+                        false,
+                        false
                 );
             }
         }
@@ -1265,17 +1167,15 @@ public class AlgoEFIM_PTMStyleBaseline {
     private static final class WorkerBins {
         final long[] lu;
         final long[] su;
-        final long[] exact;
         final long[] suffixWork;
         final int[] marks;
         final int[] touched;
         int epoch;
         int touchedCount;
 
-        WorkerBins(int itemCount, boolean trackExactUtility) {
+        WorkerBins(int itemCount) {
             lu = new long[itemCount + 1];
             su = new long[itemCount + 1];
-            exact = trackExactUtility ? new long[itemCount + 1] : null;
             suffixWork = new long[itemCount + 1];
             marks = new int[itemCount + 1];
             touched = new int[itemCount + 1];
@@ -1296,7 +1196,6 @@ public class AlgoEFIM_PTMStyleBaseline {
                 lu[item] = 0L;
                 su[item] = 0L;
                 suffixWork[item] = 0L;
-                if (exact != null) exact[item] = 0L;
                 touched[touchedCount++] = item;
             }
         }
@@ -1308,10 +1207,6 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         long suValue(int item) {
             return marks[item] == epoch ? su[item] : 0L;
-        }
-
-        long exactValue(int item) {
-            return exact != null && marks[item] == epoch ? exact[item] : 0L;
         }
 
         long estimatedWorkValue(int item, int parentTransactionCount) {
@@ -1365,10 +1260,6 @@ public class AlgoEFIM_PTMStyleBaseline {
                 bins.su[item] += projected.prefixUtility + remainingUtility;
                 bins.lu[item] += projected.prefixUtility + projected.transactionUtility;
                 bins.suffixWork[item] += projected.items.length - index;
-                if (bins.exact != null) {
-                    bins.exact[item] +=
-                            projected.prefixUtility + projected.utilities[index];
-                }
             }
 
             if (activateTransactionMerging
@@ -1512,6 +1403,7 @@ public class AlgoEFIM_PTMStyleBaseline {
 
     private Phase1Stats phase1ScanStats(String inputPath, int maximumTransactionCount) throws IOException {
         int maxItem = 0;
+        int minimumWitnessLength = activateGlobalPairUtilityRaising ? 3 : 2;
         try (BufferedReader br = new BufferedReader(new FileReader(inputPath))) {
             String line;
             int count = 0;
@@ -1544,7 +1436,13 @@ public class AlgoEFIM_PTMStyleBaseline {
                 String[] items = split[0].trim().split(" ");
                 String[] utilities = split[2].trim().split(" ");
                 stats.transactionCount++;
-                if (activateTransactionUtilityRaising && items.length >= 2) {
+                // When global exact-pair raising is active, a two-item full
+                // transaction denotes the same itemset already present in the
+                // exact pair heap. Do not count it again as an independent
+                // threshold witness. Longer transaction itemsets are distinct
+                // from all seeded singletons and pairs.
+                if (activateTransactionUtilityRaising
+                        && items.length >= minimumWitnessLength) {
                     stats.offerTransactionCertificate(
                             transactionFingerprint(items),
                             tu
@@ -1664,7 +1562,6 @@ public class AlgoEFIM_PTMStyleBaseline {
 
         if (witnesses.size() == topK) {
             minUtil = Math.max(minUtil, witnesses.peek());
-            topKThresholdCertified = true;
         }
     }
 
@@ -1743,11 +1640,13 @@ public class AlgoEFIM_PTMStyleBaseline {
         synchronized (topKQueue) {
             // The threshold may have risen while this worker was waiting.
             if (utility < minUtil) return;
-
             TopKPattern candidate = new TopKPattern(items, utility);
             if (topKQueue.size() < topK) {
                 topKQueue.offer(candidate);
-            } else if (TopKPattern.WORST_FIRST.compare(candidate, topKQueue.peek()) > 0) {
+            } else if (TopKPattern.WORST_FIRST.compare(
+                    candidate,
+                    topKQueue.peek()
+            ) > 0) {
                 topKQueue.poll();
                 topKQueue.offer(candidate);
             }
@@ -1756,7 +1655,6 @@ public class AlgoEFIM_PTMStyleBaseline {
                 // A transaction certificate may already provide a greater safe
                 // lower bound before the exact-result heap becomes full.
                 minUtil = Math.max(minUtil, topKQueue.peek().utility);
-                topKThresholdCertified = true;
             }
         }
     }
@@ -1787,12 +1685,8 @@ public class AlgoEFIM_PTMStyleBaseline {
         System.out.println(" Task admission    : " + candidateTaskAdmissionName());
         System.out.println(" Min task trans.   : "
                 + minimumTransactionsPerCandidateTask);
-        System.out.println(" Direct child U    : " + activateDirectUtilityRaising);
         System.out.println(" Global pair U     : " + activateGlobalPairUtilityRaising);
         System.out.println(" Work-aware SU     : " + activateWorkAwarePriority);
-        System.out.println(" Threshold-ready   : " + activateThresholdReadyParallelism);
-        System.out.println(" Threshold certified: " + topKThresholdCertified);
-        System.out.println(" Best-child cont.  : " + activateBestChildContinuation);
         System.out.println(" DFS partitions    : " + serialDfsPartitionCount);
         System.out.println(" Pool partitions   : " + candidatePoolPartitionCount);
         System.out.println(" Diagnostics       : " + diagnosticStatistics);
@@ -1814,19 +1708,16 @@ public class AlgoEFIM_PTMStyleBaseline {
 
     private String executionModeName() {
         if (!activateCandidateParallelism) return "SERIAL_DFS";
-        return activateThresholdReadyParallelism
-                ? "THRESHOLD_READY_DFS_POOL"
-                : "CANDIDATE_POOL";
+        return activateWorkAwarePriority
+                ? "WORK_AWARE_SU_POOL"
+                : "FIFO_POOL";
     }
 
     private String candidateTaskAdmissionName() {
-        if (maximumOutstandingCandidateTasks > 0) {
-            return "FIXED_" + Math.max(
-                    candidateWorkerCount,
-                    maximumOutstandingCandidateTasks
-            );
-        }
-        return "ADAPTIVE_HEAP_72_PERCENT";
+        return "FIXED_" + Math.max(
+                candidateWorkerCount,
+                maximumOutstandingCandidateTasks
+        );
     }
 
     private static final class Phase1Stats {

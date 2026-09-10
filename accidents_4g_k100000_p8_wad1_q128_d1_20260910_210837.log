@@ -1,0 +1,46 @@
+LOG FILE: /Users/tungtnt/Desktop/Code/iTP/accidents_4g_k100000_p8_wad1_q128_d1_20260910_210837.log
+2026-09-10 21:08:37
+========================================
+START TIME    : 2026-09-10 21:08:37
+INPUT         : dataset/accidents.txt
+TOP-K         : 100000
+MAX HEAP MB   : 4096
+CANDIDATE POOL: true
+POOL WORKERS  : 8
+TASK ADMISSION : FIXED_128
+DIAGNOSTICS    : true
+WORK-AWARE SU : true
+========================================
+[TOP-K] k=100000 | threshold after single items=1
+[TOP-K] threshold after global item pairs=1
+[PTM-STYLE] Building prefix partitions...
+[PTM-STYLE] Mining partitions in RAM...
+[MINING] mode=WORK_AWARE_SU_POOL | workers=8 | taskAdmission=FIXED_128 | minTaskTransactions=512 | globalPairUtilityRaising=true | workAwarePriority=true
+============= PTM-STYLE BASELINE STATS =============
+ Top-k requested   : 100000
+ Results returned  : 100000
+ Initial minUtil-1 : 1
+ Final minUtil     : 14721418
+ Execution mode    : WORK_AWARE_SU_POOL
+ Candidate pool    : true
+ Pool workers      : 8
+ Task admission    : FIXED_128
+ Min task trans.   : 512
+ Global pair U     : true
+ Work-aware SU     : true
+ DFS partitions    : 0
+ Pool partitions   : 224
+ Diagnostics       : true
+ Candidates        : 17426101
+ Async tasks       : 1134526
+ Small DFS switches: 1637257
+ Queue inline      : 672240
+ Time ms           : 185003
+ Max memory MB     : 1218.2792587280273
+ Partition dir     : /Users/tungtnt/Desktop/Code/iTP/dataset/accidents.txt429496729610.ptm_partitions
+====================================================
+
+========================================
+STATUS   : SUCCESS
+END TIME : 2026-09-10 21:11:42
+========================================
