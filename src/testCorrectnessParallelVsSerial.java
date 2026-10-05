@@ -1,3 +1,4 @@
+import java.io.File;
 import java.util.Arrays;
 import java.util.Map;
 import java.util.TreeMap;
@@ -22,12 +23,27 @@ public class testCorrectnessParallelVsSerial {
         int minimumTaskTransactions = args.length > 7
                 ? Integer.parseInt(args[7])
                 : 512;
+        String thresholdTracePath = args.length > 8 && !"-".equals(args[8])
+                ? args[8]
+                : null;
+        boolean objectFreeProjection = args.length <= 9
+                || Boolean.parseBoolean(args[9]);
+        boolean memoryBoundedProjection = args.length > 10
+                && Boolean.parseBoolean(args[10]);
+        int projectionBudgetMb = args.length > 11
+                ? Integer.parseInt(args[11])
+                : 256;
 
         AlgoTKEHSerialVerifier serial = new AlgoTKEHSerialVerifier();
         Itemsets expected = serial.runAlgorithm(k, input, maximumTransactions);
 
         AlgoEFIM_PTMStyleBaseline dfs = new AlgoEFIM_PTMStyleBaseline();
         dfs.configureCandidateTaskLimit(maximumOutstanding);
+        dfs.configureObjectFreeProjection(objectFreeProjection);
+        dfs.configureMemoryBoundedProjection(
+                memoryBoundedProjection,
+                projectionBudgetMb
+        );
         dfs.configureCandidateParallelism(
                 false,
                 1,
@@ -46,6 +62,14 @@ public class testCorrectnessParallelVsSerial {
                 minimumTaskTransactions
         );
         parallel.configureDiagnosticStatistics(diagnosticStatistics);
+        parallel.configureObjectFreeProjection(objectFreeProjection);
+        parallel.configureMemoryBoundedProjection(
+                memoryBoundedProjection,
+                projectionBudgetMb
+        );
+        if (thresholdTracePath != null) {
+            parallel.configureThresholdTrace(new File(thresholdTracePath));
+        }
         parallel.configureCandidateParallelism(
                 true,
                 workers,
@@ -81,8 +105,12 @@ public class testCorrectnessParallelVsSerial {
                 + " | patterns=" + actualMap.size()
                 + " | workers=" + workers
                 + " | workAware=" + workAwarePriority
+                + " | objectFreeProjection=" + objectFreeProjection
+                + " | memoryBoundedProjection=" + memoryBoundedProjection
+                + " | projectionBudgetMb=" + projectionBudgetMb
                 + " | diagnostics=" + diagnosticStatistics
                 + " | minTaskTransactions=" + minimumTaskTransactions
+                + " | thresholdTrace=" + (thresholdTracePath != null)
                 + " | maxOutstanding=" + maximumOutstanding);
         serial.printStats();
         dfs.printStats();
